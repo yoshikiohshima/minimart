@@ -33,6 +33,7 @@
 	 deliver-event
 	 transition-bind
 	 sequence-transitions
+	 routing-implementation
 
 	 log-events-and-actions?)
 
@@ -309,3 +310,5 @@
      (issue-local-routing-update (struct-copy world w [downward-routes (lift-routes routes)]))]
     [(message body meta-level feedback?)
      (enqueue-event (message body (+ meta-level 1) feedback?) w)]))
+
+(define routing-implementation 'naive)
