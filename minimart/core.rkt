@@ -16,6 +16,13 @@
 	 wildcard?
 	 sub
 	 pub
+	 gestalt-ref
+	 gestalt-empty
+	 gestalt-empty?
+	 gestalt-union
+	 gestalt-intersect
+	 pretty-print-matcher
+	 pretty-print-gestalt
 	 spawn
 	 send
 	 feedback
@@ -63,6 +70,24 @@
 
 (define (sub p #:meta-level [ml 0] #:level [l 0]) (route #t p ml l))
 (define (pub p #:meta-level [ml 0] #:level [l 0]) (route #f p ml l))
+
+(define (gestalt-ref g metalevel level get-advertisements?)
+  (filter-map (lambda (r)
+		(match-define (route is-sub? p ml l) r)
+		(and (= ml metalevel)
+		     (= l level)
+		     (eq? get-advertisements? (not is-sub?))
+		     p))
+	      (flatten g)))
+
+(define (gestalt-union . gs) (flatten gs))
+(define (gestalt-intersect g1 g2) (intersect-routes (flatten g1) (flatten g2)))
+(define (gestalt-empty) '())
+(define (gestalt-empty? g) (null? g))
+
+(require racket/pretty)
+(define (pretty-print-matcher x #:indent [ignored-indent 0]) (pretty-print x))
+(define (pretty-print-gestalt x) (pretty-print x))
 
 (define (spawn behavior state [initial-routes '()]) (process initial-routes behavior state))
 (define (send body #:meta-level [ml 0]) (message body ml #f))
@@ -217,6 +242,7 @@
   (match a
     [(? process? new-p)
      (let* ((new-pid (world-next-pid w))
+	    (new-p (struct-copy process new-p [routes (flatten (process-routes new-p))]))
 	    (w (struct-copy world w [next-pid (+ new-pid 1)]))
 	    (w (struct-copy world w [process-table
 				     (hash-set (world-process-table w)
@@ -228,7 +254,8 @@
      (when (hash-has-key? (world-process-table w) pid) (log-info "Process ~a terminating" pid))
      (let* ((w (struct-copy world w [process-table (hash-remove (world-process-table w) pid)])))
        (issue-routing-update w))]
-    [(routing-update routes)
+    [(routing-update routes0)
+     (define routes (flatten routes0))
      (if (upward-routes-change-ignorable? pid w routes)
 	 (transition w '())
 	 (let* ((w (transform-process pid w
