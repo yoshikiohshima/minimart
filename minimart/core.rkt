@@ -20,7 +20,7 @@
 	 gestalt-empty
 	 gestalt-empty?
 	 gestalt-union
-	 gestalt-intersect
+	 gestalt-filter
 	 pretty-print-matcher
 	 pretty-print-gestalt
 	 spawn
@@ -82,7 +82,7 @@
 	      (flatten g)))
 
 (define (gestalt-union . gs) (flatten gs))
-(define (gestalt-intersect g1 g2) (intersect-routes (flatten g1) (flatten g2)))
+(define (gestalt-filter g1 g2) (intersect-routes (flatten g1) (flatten g2)))
 (define (gestalt-empty) '())
 (define (gestalt-empty? g) (null? g))
 
