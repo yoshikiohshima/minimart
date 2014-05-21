@@ -414,11 +414,11 @@
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
-       (when skipped? (error 'pattern->matcher "Cannot reflect on struct instance ~v" p))
+       (when skipped? (error 'compile-projection "Cannot reflect on struct instance ~v" p))
        (define fs (cdr (vector->list (struct->vector p))))
        (cons t (foldr walk (cons EOS acc) fs))]
       ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
-      [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
+      [(? hash?) (error 'compile-projection "Cannot match on hash tables at present")]
       [other (cons other acc)])))
 
 ;; Matcher × CompiledProjection [× (Value -> (Option Value))] → Matcher
