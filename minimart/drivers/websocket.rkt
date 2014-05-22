@@ -2,6 +2,7 @@
 
 (require racket/match)
 (require net/rfc6455)
+(require (only-in net/rfc6455/conn-api ws-conn-base-ip))
 (require "../main.rkt")
 (require "../demand-matcher.rkt")
 
@@ -28,12 +29,10 @@
 ;; Driver
 
 (define (spawn-websocket-driver)
-  (spawn-demand-matcher (websocket-message ? (websocket-local-server ? ?) ?)
+  (spawn-demand-matcher (websocket-message ? (?! (websocket-local-server ? ?)) ?)
 			#:demand-level 1
 			#:supply-level 2
-			(match-lambda
-			 [(route _ (websocket-message _ server-addr _) _ _)
-			  (spawn-websocket-listener server-addr)])))
+			spawn-websocket-listener))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Listener
@@ -42,13 +41,12 @@
 
 (define (websocket-listener e state)
   (match e
-    [(routing-update routes)
+    [(routing-update g)
      (match-define (listener-state shutdown-procedure server-addr) state)
-     (define peer-listener-route (pub (websocket-message ? server-addr ?) #:level 2))
-     (if (for/or ((r routes)) (pair? (intersect-routes (list r) (list peer-listener-route))))
-	 #f
+     (if (gestalt-empty? (gestalt-filter g (pub (websocket-message ? server-addr ?) #:level 2)))
 	 (begin (when shutdown-procedure (shutdown-procedure))
-		(transition (struct-copy listener-state state [shutdown-procedure #f]) (quit))))]
+		(transition (struct-copy listener-state state [shutdown-procedure #f]) (quit)))
+	 #f)]
     [(message (event _ (list (list c connection-shutdown-procedure))) 1 #f)
      (transition state
 		 (spawn-connection (listener-state-server-addr state)
@@ -80,8 +78,8 @@
 				       (connection-handler ch)))
   (spawn websocket-listener
 	 (listener-state shutdown-procedure server-addr)
-	 (list (pub (websocket-message ? server-addr ?) #:level 2)
-	       (sub (event ch ?) #:meta-level 1))))
+	 (gestalt-union (pub (websocket-message ? server-addr ?) #:level 2)
+			(sub (event ch ?) #:meta-level 1))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Connection
@@ -111,11 +109,11 @@
       [(message (websocket-message _ _ m) 0 #f)
        (ws-send! (connection-state-c state) m)
        #f]
-      [(routing-update routes)
+      [(routing-update g)
        (cond
-	[(and (connection-state-seen-peer? state) (null? routes))
+	[(and (connection-state-seen-peer? state) (gestalt-empty? g))
 	 (shutdown-connection state)]
-	[(and (not (connection-state-seen-peer? state)) (pair? routes))
+	[(and (not (connection-state-seen-peer? state)) (not (gestalt-empty? g)))
 	 (transition (struct-copy connection-state state [seen-peer? #t]) '())]
 	[else
 	 #f])]
@@ -125,7 +123,7 @@
   (define local-addr (websocket-remote-client (gensym 'ws)))
   (spawn websocket-connection
 	 (connection-state #f local-addr server-addr c shutdown-procedure)
-	 (list (pub (websocket-message local-addr server-addr ?))
-	       (sub (websocket-message server-addr local-addr ?))
-	       (sub (websocket-message server-addr local-addr ?) #:level 1)
-	       (sub (event c ?) #:meta-level 1))))
+	 (gestalt-union (pub (websocket-message local-addr server-addr ?))
+			(sub (websocket-message server-addr local-addr ?))
+			(sub (websocket-message server-addr local-addr ?) #:level 1)
+			(sub (event (ws-conn-base-ip c) ?) #:meta-level 1))))
