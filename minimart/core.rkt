@@ -246,7 +246,9 @@
      (define p (hash-ref pt pid (lambda () #f)))
      (if p
 	 (let* ((w (struct-copy world w [process-table (hash-remove pt pid)])))
-	   (log-info "Process ~a terminating" pid)
+	   (log-info "Process ~a terminating; ~a processes remain"
+		     pid
+		     (hash-count (world-process-table w)))
 	   (apply-and-issue-routing-update w pid (process-gestalt p) (gestalt-empty)))
 	 (transition w '()))]
     [(routing-update gestalt)
