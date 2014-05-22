@@ -109,12 +109,6 @@
 (define (rwild r)    (rseq ? r))
 (define (rwildseq r) (if (matcher-empty? r) r (wildcard-sequence r)))
 
-(define (rseq* x . xs)
-  (let walk ((xs (cons x xs)))
-    (match xs
-      [(list r) r]
-      [(cons e xs1) (rseq e (walk xs1))])))
-
 ;; Any -> Boolean
 ;; Racket objects are structures, so we reject them explicitly for
 ;; now, leaving them opaque to unification.
@@ -911,6 +905,12 @@
 		       (pattern->matcher SB b)))
 
   (define EAB (E (set 'A 'B)))
+
+  (define (rseq* x . xs)
+    (let walk ((xs (cons x xs)))
+      (match xs
+	[(list r) r]
+	[(cons e xs1) (rseq e (walk xs1))])))
 
   (check-equal? (intersect ? ?) (rwild EAB))
   (check-equal? (intersect 'a ?) (rseq 'a EAB))
