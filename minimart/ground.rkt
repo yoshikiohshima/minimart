@@ -14,7 +14,7 @@
 (define (event-handler descriptor)
   (handle-evt descriptor (lambda vs (send (event descriptor vs)))))
 
-(define event-projection (compile-gestalt-projection (event ?! ?)))
+(define event-projection (compile-gestalt-projection (event (?!) ?)))
 
 (define (extract-active-events gestalt)
   (define es (matcher-key-set (gestalt-project gestalt 0 0 #f event-projection)))
