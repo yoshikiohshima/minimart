@@ -34,6 +34,7 @@
 	 matcher-match-matcher-unit
 	 matcher-project-success)
 
+;; TODO: perhaps avoid the parameters on the fast-path, if they are causing measurable slowdown.
 (define matcher-union-successes (make-parameter set-union))
 (define matcher-intersect-successes (make-parameter set-union))
 (define matcher-erase-path-successes (make-parameter (lambda (s1 s2)
