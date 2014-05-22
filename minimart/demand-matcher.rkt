@@ -1,8 +1,9 @@
 #lang racket/base
 
+(require racket/set)
 (require racket/match)
 (require "core.rkt")
-(require "presence-detector.rkt")
+(require "gestalt.rkt")
 
 (provide (except-out (struct-out demand-matcher) demand-matcher)
 	 (rename-out [make-demand-matcher demand-matcher])
@@ -11,100 +12,61 @@
 
 (struct demand-matcher (demand-is-subscription?
 			pattern
+			spec
 			meta-level
 			demand-level
 			supply-level
 			increase-handler
 			decrease-handler
-			state)
+			current-demand
+			current-supply)
 	#:transparent)
 
-(define (unexpected-supply-decrease r)
+(define (unexpected-supply-decrease . removed-captures)
   '())
 
-(define (default-decrease-handler removed state)
+(define (default-decrease-handler state . removed-captures)
   state)
 
 (define (make-demand-matcher demand-is-subscription?
-			     pattern
+			     projection
 			     meta-level
 			     demand-level
 			     supply-level
 			     increase-handler
 			     [decrease-handler default-decrease-handler])
   (demand-matcher demand-is-subscription?
-		  pattern
+		  (projection->pattern projection)
+		  (compile-gestalt-projection projection)
 		  meta-level
 		  demand-level
 		  supply-level
 		  increase-handler
 		  decrease-handler
-		  (presence-detector)))
+		  (set)
+		  (set)))
 
-(define (compute-detector demand? d)
-  (route (if (demand-matcher-demand-is-subscription? d) (not demand?) demand?)
-	 (demand-matcher-pattern d)
-	 (demand-matcher-meta-level d)
-	 (+ 1 (max (demand-matcher-demand-level d)
-		   (demand-matcher-supply-level d)))))
-
-;; For each route "changed" in routes, if changed is one of our
-;; monitored entities (a demand, if arrivals? is #t, or a supply
-;; otherwise), including both a pattern, meta-level, and level match,
-;; then search for matching peers (including level matching). If
-;; arrivals? is #t, then if there are no matching peers (i.e. supplies
-;; are not allocated), signel an increas in demand; otherwise, if
-;; there are any matching peers (i.e. demand remains), signal a
-;; decrease in supply.
-(define (incorporate-delta arrivals? routes d state)
-  (define relevant-change-detector (compute-detector arrivals? d))
-  (define expected-change-level
-    (if arrivals? (demand-matcher-demand-level d) (demand-matcher-supply-level d)))
-  (define expected-peer-level
-    (if arrivals? (demand-matcher-supply-level d) (demand-matcher-demand-level d)))
-  (for/fold ([s state]) ([changed routes])
-    (if (= (route-level changed) expected-change-level)
-	(match (intersect-routes (list changed) (list relevant-change-detector))
-	  ['() s]
-	  [(list relevant-changed-route) ;; narrowed to relevancy by intersect-routes
-	   ;; (log-info "incorporate-delta ~v ~v <--> ~v /// ~v"
-	   ;; 	     arrivals?
-	   ;; 	     relevant-changed-route
-	   ;; 	     relevant-change-detector
-	   ;; 	     (demand-matcher-state d))
-	   (define peer-detector
-	     (struct-copy route relevant-changed-route [level (+ 1 expected-peer-level)]))
-	   (define peer-exists?
-	     (ormap (lambda (r) (= (route-level r) expected-peer-level))
-		    (intersect-routes (presence-detector-routes (demand-matcher-state d))
-				      (list peer-detector))))
-	   ;; (log-info "peer-exists? == ~v, peer-detector == ~v"
-	   ;; 	     peer-exists?
-	   ;; 	     peer-detector)
-	   (cond
-	    [(and arrivals? (not peer-exists?))
-	     ((demand-matcher-increase-handler d) relevant-changed-route s)]
-	    [(and (not arrivals?) peer-exists?)
-	     ((demand-matcher-decrease-handler d) relevant-changed-route s)]
-	    [else
-	     s])])
-	s)))
-
-(define (demand-matcher-update d state0 rs)
-  (define-values (new-state added removed) (presence-detector-update (demand-matcher-state d) rs))
-  (define new-d (struct-copy demand-matcher d [state new-state]))
-  (define state1 (incorporate-delta #t added new-d state0))
-  (define state2 (incorporate-delta #f removed new-d state1))
-  (values new-d state2))
+(define (demand-matcher-update d s g)
+  (match-define (demand-matcher demand-is-sub? _ spec ml dl sl inc-h dec-h old-demand old-supply) d)
+  (define new-demand (matcher-key-set (gestalt-project g ml dl (not demand-is-sub?) spec)))
+  (define new-supply (matcher-key-set (gestalt-project g ml sl demand-is-sub? spec)))
+  (define demand+ (set-subtract (set-subtract new-demand old-demand) new-supply))
+  (define supply- (set-intersect (set-subtract old-supply new-supply) new-demand))
+  (define new-d (struct-copy demand-matcher d
+		  [current-demand new-demand]
+		  [current-supply new-supply]))
+  (let* ((s (for/fold [(s s)] [(k (in-set demand+))] (apply inc-h s (vector->list k))))
+	 (s (for/fold [(s s)] [(k (in-set supply-))] (apply dec-h s (vector->list k)))))
+    (values new-d s)))
 
 (define (demand-matcher-handle-event e d)
   (match e
-    [(routing-update routes)
-     (define-values (new-d actions) (demand-matcher-update d '() routes))
+    [(routing-update gestalt)
+     (define-values (new-d actions) (demand-matcher-update d '() gestalt))
      (transition new-d actions)]
     [_ #f]))
 
-(define (spawn-demand-matcher pattern
+(define (spawn-demand-matcher projection
 			      increase-handler
 			      [decrease-handler unexpected-supply-decrease]
 			      #:demand-is-subscription? [demand-is-subscription? #t]
@@ -112,13 +74,15 @@
 			      #:demand-level [demand-level 0]
 			      #:supply-level [supply-level 0])
   (define d (make-demand-matcher demand-is-subscription?
-				 pattern
+				 projection
 				 meta-level
 				 demand-level
 				 supply-level
-				 (lambda (r actions) (cons (increase-handler r) actions))
-				 (lambda (r actions) (cons (decrease-handler r) actions))))
+				 (lambda (acs . rs) (cons (apply increase-handler rs) acs))
+				 (lambda (acs . rs) (cons (apply decrease-handler rs) acs))))
+  (define observer-pattern (demand-matcher-pattern d))
+  (define observer-level (+ 1 (max demand-level supply-level)))
   (spawn demand-matcher-handle-event
 	 d
-	 (list (compute-detector #t d)
-	       (compute-detector #f d))))
+	 (gestalt-union (sub observer-pattern #:meta-level meta-level #:level observer-level)
+			(pub observer-pattern #:meta-level meta-level #:level observer-level))))
