@@ -202,6 +202,11 @@
     [#f w]
     [p (struct-copy world w [process-table (hash-set pt pid (fp p))])]))
 
+;; TODO: currently, aggregate-gestalt updates are applied at
+;; action-interpretation time (and when an event is injected from
+;; outside). This could mean very rapid changes are glossed over, with
+;; only a summary of the resulting table being delivered out to
+;; processes after the activity has died down.
 (define (update-aggregate-gestalt w pid old-g new-g)
   (struct-copy world w [aggregate-gestalt
 			(gestalt-union (gestalt-erase-path (world-aggregate-gestalt w)
@@ -230,6 +235,10 @@
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)]))
 	    (w (mark-pid-runnable w new-pid)))
+       ;; TODO: figure out how to send the new process an initial
+       ;; gestalt. Currently, it doesn't get one because we filter
+       ;; updates by *change*, and the world hasn't "changed" here so
+       ;; the process doesn't see the "new" state of the world.
        (log-info "Spawned process ~a ~v ~v" new-pid (process-behavior new-p) (process-state new-p))
        (apply-and-issue-routing-update w new-pid (gestalt-empty) new-gestalt))]
     [(quit)
