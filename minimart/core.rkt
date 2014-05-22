@@ -21,6 +21,7 @@
 	 (struct-out capture)
 	 pretty-print-matcher
 	 matcher-key-set
+	 projection->pattern
 
 	 sub
 	 pub

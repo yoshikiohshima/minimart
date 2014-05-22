@@ -22,6 +22,7 @@
 	 matcher-match-matcher
 	 matcher-relabel
 	 compile-projection
+	 projection->pattern
 	 matcher-project
 	 matcher-key-set
 	 pretty-print-matcher)
@@ -428,6 +429,21 @@
       ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
       [(? hash?) (error 'compile-projection "Cannot match on hash tables at present")]
       [other (cons other acc)])))
+
+(define (projection->pattern p)
+  (let walk ((p p))
+    (match p
+      [(capture sub) (walk sub)] ;; TODO: maybe enforce non-nesting here too?
+      [(cons p1 p2) (cons (walk p1) (walk p2))]
+      [(? vector? v) (for/vector [(e (in-vector v))] (walk e))]
+      [(? non-object-struct?)
+       (define-values (t skipped?) (struct-info p))
+       (when skipped? (error 'projection->pattern "Cannot reflect on struct instance ~v" p))
+       (define fs (cdr (vector->list (struct->vector p))))
+       (apply (struct-type-make-constructor t) (map walk fs))]
+      ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
+      [(? hash?) (error 'projection->pattern "Cannot match on hash tables at present")]
+      [other other])))
 
 ;; Matcher × CompiledProjection [× (Value -> (Option Value))] → Matcher
 ;; The result matches a vector of length equal to the number of captures.
@@ -1092,4 +1108,11 @@
 				  (compile-projection (cons (?!) (?!)))
 				  #:project-success (lambda (v) #t)))
 		(set '#(1 2) '#(3 4)))
+
+  (check-equal? (projection->pattern (list 'a 'b)) (list 'a 'b))
+  (check-equal? (projection->pattern (list 'a ?)) (list 'a ?))
+  (check-equal? (projection->pattern (list 'a (?!))) (list 'a ?))
+  (check-equal? (projection->pattern (list 'a (?! 'b))) (list 'a 'b))
+  (check-equal? (projection->pattern (list 'a (?! (vector 'b)))) (list 'a (vector 'b)))
+  (check-equal? (projection->pattern (list 'a (?! (vector ? ?)))) (list 'a (vector ? ?)))
   )
