@@ -256,13 +256,15 @@
   (gestalt-matcher-transform g (lambda (m) (matcher-relabel m (lambda (v) pidset)))))
 
 (define (pretty-print-gestalt g [port (current-output-port)])
-  (for [(metalevel (in-naturals)) (ls (in-list (gestalt-metalevels g)))]
-    (for [(level (in-naturals)) (p (in-list ls))]
-      (match-define (cons subs advs) p)
-      (when (or subs advs)
-	(fprintf port "GESTALT metalevel ~v level ~v:\n" metalevel level)
-	(when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
-	(when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9))))))
+  (if (gestalt-empty? g)
+      (fprintf port "EMPTY GESTALT\n")
+      (for [(metalevel (in-naturals)) (ls (in-list (gestalt-metalevels g)))]
+	(for [(level (in-naturals)) (p (in-list ls))]
+	  (match-define (cons subs advs) p)
+	  (when (or subs advs)
+	    (fprintf port "GESTALT metalevel ~v level ~v:\n" metalevel level)
+	    (when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
+	    (when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
