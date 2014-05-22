@@ -47,6 +47,9 @@
 ;; (spawn is just process)
 (struct quit () #:prefab)
 
+;; Intra-world signalling
+(struct pending-routing-update (aggregate affected-subgestalt known-targets) #:prefab)
+
 ;; Actors and Configurations
 (struct process (gestalt behavior state) #:transparent)
 (struct world (next-pid			;; Natural, PID for next-spawned process
@@ -122,6 +125,29 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; World implementation
+
+;; Each time a world is handed an event from its environment, it:
+;;  1. dispatches events
+;;      a. removing them one-at-a-time from the queue
+;;      b. dispatching them to processes
+;;      c. updating process states and accumulating actions in the queue
+;;      d. any process that returned non-#f is considered "non-idle" for step 3.
+;;  2. performs actions
+;;      a. removing them one-at-a-time from the queue
+;;      b. interpreting them
+;;      c. updating world state and accumulating events in the queue
+;;  3. steps non-idle processes
+;;      a. runs through the set of processes accumulated in 1d. above
+;;      b. any process that returned non-#f is put in the "non-idle" set for next time
+;;  4. yields updated world state and world actions to environment.
+;;
+;; Note that routing-update actions are queued internally as
+;; pending-routing-update structures, in order to preserve and
+;; communicate transient gestalt states to processes. In addition, the
+;; known-targets field of a pending-routing-update structure is used
+;; to provide NC's initial gestalt signal to a newly-spawned process.
+;;
+;; TODO: should step 3 occur before step 1?
 
 (define (enqueue-actions w pid actions)
   (struct-copy world w
@@ -202,27 +228,26 @@
     [#f w]
     [p (struct-copy world w [process-table (hash-set pt pid (fp p))])]))
 
-;; TODO: currently, aggregate-gestalt updates are applied at
-;; action-interpretation time (and when an event is injected from
-;; outside). This could mean very rapid changes are glossed over, with
-;; only a summary of the resulting table being delivered out to
-;; processes after the activity has died down.
 (define (update-aggregate-gestalt w pid old-g new-g)
   (struct-copy world w [aggregate-gestalt
 			(gestalt-union (gestalt-erase-path (world-aggregate-gestalt w)
 							   old-g)
 				       new-g)]))
 
-(define (issue-local-routing-update w relevant-gestalt)
-  (enqueue-event (routing-update relevant-gestalt) w))
+(define (issue-local-routing-update w relevant-gestalt known-targets)
+  (enqueue-event (pending-routing-update (world-aggregate-gestalt w)
+					 relevant-gestalt
+					 known-targets)
+		 w))
 
-(define (issue-routing-update w relevant-gestalt)
-  (transition (issue-local-routing-update w relevant-gestalt)
+(define (issue-routing-update w relevant-gestalt known-targets)
+  (transition (issue-local-routing-update w relevant-gestalt known-targets)
               (routing-update (drop-gestalt (world-aggregate-gestalt w)))))
 
-(define (apply-and-issue-routing-update w pid old-gestalt new-gestalt)
+(define (apply-and-issue-routing-update w pid old-gestalt new-gestalt known-targets)
   (issue-routing-update (update-aggregate-gestalt w pid old-gestalt new-gestalt)
-			(gestalt-union old-gestalt new-gestalt)))
+			(gestalt-union old-gestalt new-gestalt)
+			known-targets))
 
 (define ((perform-action pid a) w)
   (match a
@@ -233,14 +258,9 @@
 	    (new-p (struct-copy process new-p [gestalt new-gestalt]))
 	    (w (struct-copy world w
 		 [next-pid (+ new-pid 1)]
-		 [process-table (hash-set (world-process-table w) new-pid new-p)]))
-	    (w (mark-pid-runnable w new-pid)))
-       ;; TODO: figure out how to send the new process an initial
-       ;; gestalt. Currently, it doesn't get one because we filter
-       ;; updates by *change*, and the world hasn't "changed" here so
-       ;; the process doesn't see the "new" state of the world.
+		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
        (log-info "Spawned process ~a ~v ~v" new-pid (process-behavior new-p) (process-state new-p))
-       (apply-and-issue-routing-update w new-pid (gestalt-empty) new-gestalt))]
+       (apply-and-issue-routing-update w new-pid (gestalt-empty) new-gestalt (set new-pid)))]
     [(quit)
      (define pt (world-process-table w))
      (define p (hash-ref pt pid (lambda () #f)))
@@ -249,7 +269,7 @@
 	   (log-info "Process ~a terminating; ~a processes remain"
 		     pid
 		     (hash-count (world-process-table w)))
-	   (apply-and-issue-routing-update w pid (process-gestalt p) (gestalt-empty)))
+	   (apply-and-issue-routing-update w pid (process-gestalt p) (gestalt-empty) (set)))
 	 (transition w '()))]
     [(routing-update gestalt)
      (define pt (world-process-table w))
@@ -259,15 +279,13 @@
 		(new-gestalt (label-gestalt gestalt pid))
 		(new-p (struct-copy process p [gestalt new-gestalt]))
 		(w (struct-copy world w [process-table (hash-set pt pid new-p)])))
-	   (apply-and-issue-routing-update w pid old-gestalt new-gestalt))
+	   (apply-and-issue-routing-update w pid old-gestalt new-gestalt (set)))
 	 (transition w '()))]
     [(message body meta-level feedback?)
      (if (zero? meta-level)
 	 (transition (enqueue-event a w) '())
 	 (transition w (message body (- meta-level 1) feedback?)))]))
 
-;; NOTE: routing-update events arriving here carry descriptions of the
-;; changed region of the aggregate, NOT the whole aggregate.
 (define (dispatch-event e w)
   (match e
     [(message body meta-level feedback?)
@@ -275,11 +293,10 @@
      (define pt (world-process-table w))
      (for/fold ([w w]) [(pid (in-set pids))]
        (apply-transition pid (deliver-event e pid (hash-ref pt pid)) w))]
-    [(routing-update affected-subgestalt)
-     (define g (world-aggregate-gestalt w))
+    [(pending-routing-update g affected-subgestalt known-targets)
      (define affected-pids (gestalt-match affected-subgestalt g))
      (define pt (world-process-table w))
-     (for/fold ([w w]) [(pid (in-set affected-pids))]
+     (for/fold ([w w]) [(pid (in-set (set-union known-targets affected-pids)))]
        (define p (hash-ref pt pid))
        (define g1 (gestalt-filter g (process-gestalt p)))
        (apply-transition pid (deliver-event (routing-update g1) pid p) w))]))
@@ -310,7 +327,8 @@
      (define old-downward (world-downward-gestalt w))
      (define new-downward (lift-gestalt (label-gestalt g 'out)))
      (issue-local-routing-update (update-aggregate-gestalt w 'out old-downward new-downward)
-				 (gestalt-union old-downward new-downward))]
+				 (gestalt-union old-downward new-downward)
+				 (set))]
     [(message body meta-level feedback?)
      (enqueue-event (message body (+ meta-level 1) feedback?) w)]))
 
