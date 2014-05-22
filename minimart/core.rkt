@@ -118,7 +118,7 @@
 
 (define (trigger-guard-process p)
   (match-define (process _ b s) p)
-  (struct-copy process p [behavior trigger-guard-handle] [state (trigger-guard (gestalt-empty) b s)]))
+  (struct-copy process p [behavior trigger-guard-handle] [state (trigger-guard #f b s)]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; World implementation
