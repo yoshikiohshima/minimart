@@ -168,11 +168,16 @@
 
 ;; View on g1 from g2's perspective.
 (define (gestalt-filter g1 g2)
-  (gestalt (map-zip shorter-imbalance-handler
-		    filter-one-metalevel
-		    cons-metalevel
-		    (gestalt-metalevels g1)
-		    (gestalt-metalevels g2))))
+  (parameterize ((matcher-union-successes (lambda (v1 v2)
+					    (match* (v1 v2)
+					      [(#t v) v]
+					      [(v #t) v]
+					      [(v1 v2) (set-union v1 v2)]))))
+    (gestalt (map-zip shorter-imbalance-handler
+		      filter-one-metalevel
+		      cons-metalevel
+		      (gestalt-metalevels g1)
+		      (gestalt-metalevels g2)))))
 
 ;; Much like gestalt-filter, takes a view on gestalt g1 from g2's
 ;; perspective. However, instead of returning the filtered g1, returns
@@ -202,17 +207,20 @@
 	 (safe-cdr ls)))
 
 (define (filter-one-metalevel ls1 ls2)
-  (let loop ((ls1 ls1) (ls2 (smear-levels ls2)))
-    (cond [(null? ls1) '()]
-	  [(null? ls2) '()]
-	  [else (match-define (cons (cons subs1 advs1) rest1) ls1)
-		(match-define (cons (cons subs2 advs2) rest2) ls2)
-		(cons-level (cons (matcher-intersect subs1 advs2 #:combine (lambda (v1 v2) v1))
-				  (matcher-intersect advs1 subs2 #:combine (lambda (v1 v2) v1)))
-			    (loop rest1 rest2))])))
+  (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
+    (let loop ((ls1 ls1) (ls2 (smear-levels ls2)))
+      (cond [(null? ls1) '()]
+	    [(null? ls2) '()]
+	    [else (match-define (cons (cons subs1 advs1) rest1) ls1)
+		  (match-define (cons (cons subs2 advs2) rest2) ls2)
+		  (cons-level (cons (matcher-intersect subs1 advs2)
+				    (matcher-intersect advs1 subs2))
+			      (loop rest1 rest2))]))))
 
 (define (match-matchers m1 m2)
-  (matcher-match-matcher m1 m2 #:combine (lambda (v1 v2 acc) (set-union v2 acc)) #:empty (set)))
+  (parameterize ((matcher-match-matcher-successes (lambda (v1 v2 acc) (set-union v2 acc)))
+		 (matcher-match-matcher-unit (set)))
+    (matcher-match-matcher m1 m2)))
 
 (define (match-one-metalevel ls1 ls2)
   (let loop ((ls1 ls1) (ls2 (smear-levels ls2)))

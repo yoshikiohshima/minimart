@@ -25,10 +25,25 @@
 	 projection->pattern
 	 matcher-project
 	 matcher-key-set
-	 pretty-print-matcher)
+	 pretty-print-matcher
 
-;; TODO: consider currying matcher-union and friends to specialize
-;; them for specific combiners.
+	 matcher-union-successes
+	 matcher-intersect-successes
+	 matcher-erase-path-successes
+	 matcher-match-matcher-successes
+	 matcher-match-matcher-unit
+	 matcher-project-success)
+
+(define matcher-union-successes (make-parameter set-union))
+(define matcher-intersect-successes (make-parameter set-union))
+(define matcher-erase-path-successes (make-parameter (lambda (s1 s2)
+						       (define r (set-subtract s1 s2))
+						       (if (set-empty? r) #f r))))
+(define matcher-match-matcher-successes (make-parameter (lambda (v1 v2 a)
+							  (cons (set-union (car a) v1)
+								(set-union (cdr a) v2)))))
+(define matcher-match-matcher-unit (make-parameter (cons (set) (set))))
+(define matcher-project-success (make-parameter values))
 
 (define-syntax-rule (define-singleton-struct singleton-name struct-name print-representation)
   (begin
@@ -153,52 +168,50 @@
   (matcher-union (rwild (rwildseq r))
 		 (rseq EOS r)))
 
-(define (matcher-union re1 re2 #:combine [combine-successes set-union])
-  (define (merge o1 o2)
-    (match* (o1 o2)
-      [(#f #f) #f]
-      [(#f r) r]
-      [(r #f) r]
-      [(r1 r2) (walk r1 r2)]))
-  (define (walk re1 re2)
-    (match* (re1 re2)
-      [((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
-      [((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
-      [(r1 (wildcard-sequence r2)) (walk (expand-wildseq r2) r1)]
-      [((success v1) (success v2)) (rsuccess (combine-successes v1 v2))]
-      [((? hash? h1) (? hash? h2))
-       (define w (merge (rlookup h1 ?) (rlookup h2 ?)))
-       (cond
-	[w (merge/wildcard w h1 h2)]
-	[(< (hash-count h2) (hash-count h1)) (merge/no-wildcard h2 h1)]
-	[else (merge/no-wildcard h1 h2)])]))
-  (define (merge/wildcard w h1 h2)
-    (for/fold [(acc (rwild w))]
-	[(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
-      (define k (merge (rlookup h1 key) (rlookup h2 key)))
-      (rupdate acc
-	       key
-	       (cond
-		[(key-open? key) (merge (rwildseq w) k)]
-		[(key-close? key) (if (wildcard-sequence? w)
-				      (merge (wildcard-sequence-matcher w) k)
-				      k)]
-		[else (merge w k)]))))
-  (define (merge/no-wildcard h1 h2)
-    (for/fold [(acc h2)] [((key k1) (in-hash h1))]
-      (define k (merge k1 (rlookup h2 key)))
-      (rupdate acc key k)))
-  (match* (re1 re2)
-    [(#f r) r]
-    [(r #f) r]
-    [(r1 r2) (walk r1 r2)]))
+(define matcher-union
+  (let ()
+    (define (merge o1 o2)
+      (match* (o1 o2)
+	[(#f #f) #f]
+	[(#f r) r]
+	[(r #f) r]
+	[(r1 r2) (walk r1 r2)]))
+    (define (walk re1 re2)
+      (match* (re1 re2)
+	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
+	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
+	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
+	[((success v1) (success v2)) (rsuccess ((matcher-union-successes) v1 v2))]
+	[((? hash? h1) (? hash? h2))
+	 (define w (merge (rlookup h1 ?) (rlookup h2 ?)))
+	 (cond
+	  [w (merge/wildcard w h1 h2)]
+	  [(< (hash-count h1) (hash-count h2)) (merge/no-wildcard merge h1 h2)]
+	  [else (merge/no-wildcard (lambda (o2 o1) (merge o1 o2)) h2 h1)])]))
+    (define (merge/wildcard w h1 h2)
+      (for/fold [(acc (rwild w))]
+	  [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
+	(define k (merge (rlookup h1 key) (rlookup h2 key)))
+	(rupdate acc
+		 key
+		 (cond
+		  [(key-open? key) (merge (rwildseq w) k)]
+		  [(key-close? key) (if (wildcard-sequence? w)
+					(merge (wildcard-sequence-matcher w) k)
+					k)]
+		  [else (merge w k)]))))
+    (define (merge/no-wildcard merge-fn h1 h2)
+      (for/fold [(acc h2)] [((key k1) (in-hash h1))]
+	(define k (merge-fn k1 (rlookup h2 key)))
+	(rupdate acc key k)))
+    merge))
 
 (define (smaller-hash h1 h2)
   (if (< (hash-count h1) (hash-count h2))
       h1
       h2))
 
-(define (matcher-intersect re1 re2 #:combine [combine-successes set-union])
+(define matcher-intersect
   (let ()
     ;; INVARIANT: re1 is a part of the original re1, and likewise for
     ;; re2. This is so that the first arg to combine-success-values
@@ -208,7 +221,7 @@
 	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
 	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
 	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-	[((success v1) (success v2)) (rsuccess (combine-successes v1 v2))]
+	[((success v1) (success v2)) (rsuccess ((matcher-intersect-successes) v1 v2))]
 	[((? hash? h1) (? hash? h2))
 	 (define w1 (rlookup h1 ?))
 	 (define w2 (rlookup h2 ?))
@@ -245,96 +258,92 @@
 				    (walk-fn (wildcard-sequence-matcher w) k)
 				    #f)]
 	      [else (walk-fn w k)])))
-    (match* (re1 re2)
-      [(#f r) #f]
-      [(r #f) #f]
-      [(r1 r2) (walk r1 r2)])))
-
-(define (set-subtract/false s1 s2)
-  (define r (set-subtract s1 s2))
-  (if (set-empty? r) #f r))
+    (lambda (re1 re2)
+      (match* (re1 re2)
+	[(#f r) #f]
+	[(r #f) #f]
+	[(r1 r2) (walk r1 r2)]))))
 
 ;; Removes re2's mappings from re1. Assumes re2 has previously been union'd into re1.
 ;; The combine-successes function should return #f to signal "no remaining success values".
-(define (matcher-erase-path re1 re2 #:combine [combine-successes set-subtract/false])
-  (define (cofinite-pattern)
-    (error 'matcher-erase-path "Cofinite pattern required"))
-  (define (walk path aggregate)
-    (match* (path aggregate)
-      [((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
-      [((wildcard-sequence r1) r2) (cofinite-pattern)]
-      [(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-      [((success v1) (success v2)) (rsuccess (combine-successes v1 v2))]
-      [((? hash? h1) (? hash? h2))
-       (define w1 (rlookup h1 ?))
-       (define w2 (rlookup h2 ?))
-       (define w (match* (w1 w2)
-		   [(#f #f) #f]
-		   [(r #f) r]
-		   [(#f r) (cofinite-pattern)]
-		   [(r1 r2) (walk r1 r2)]))
-       (define (examine-key acc key)
-	 (rupdate acc
-		  key
-		  (match* ((rlookup h1 key) (rlookup h2 key))
-		    [(#f #f) #f]
-		    [(#f k2) (cofinite-pattern)]
-		    [(k1 #f) (walk-wild key k1 w2)]
-		    [(k1 k2) (walk k1 k2)])))
-       ;; TODO: need to ensure "minimal" remainder in cases where
-       ;; after an erasure, a particular key's continuation is the
-       ;; same as the wildcard's continuation. See tests/examples
-       ;; below.
-       ;;
-       ;; --
-       ;; We only need to examine all keys of h1 if w2 nonfalse.
-       (if w2
-	   (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
-								    (hash-keys h2))
-							 ?))]
-	     (examine-key acc key))
-	   (for/fold [(acc h1)] [(key (in-hash-keys h2))]
-	     (examine-key acc key)))]))
-  (define (walk-wild key k w)
-    (if w
-	(cond
-	 [(key-open? key) (walk k (rwildseq w))]
-	 [(key-close? key) (if (wildcard-sequence? w)
-			       (walk k (wildcard-sequence-matcher w))
-			       k)]
-	 [else (walk k w)])
-	k))
-  (match* (re1 re2)
-    [(r #f) r]
-    [(#f r) (cofinite-pattern)]
-    [(r1 r2) (walk r1 r2)]))
+(define matcher-erase-path
+  (let ()
+    (define (cofinite-pattern)
+      (error 'matcher-erase-path "Cofinite pattern required"))
+    (define (walk path aggregate)
+      (match* (path aggregate)
+	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
+	[((wildcard-sequence r1) r2) (cofinite-pattern)]
+	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
+	[((success v1) (success v2)) (rsuccess ((matcher-erase-path-successes) v1 v2))]
+	[((? hash? h1) (? hash? h2))
+	 (define w1 (rlookup h1 ?))
+	 (define w2 (rlookup h2 ?))
+	 (define w (match* (w1 w2)
+		     [(#f #f) #f]
+		     [(r #f) r]
+		     [(#f r) (cofinite-pattern)]
+		     [(r1 r2) (walk r1 r2)]))
+	 (define (examine-key acc key)
+	   (define updated-k (match* ((rlookup h1 key) (rlookup h2 key))
+			       [(#f #f) #f]
+			       [(#f k2) (cofinite-pattern)]
+			       [(k1 #f) (walk-wild key k1 w2)]
+			       [(k1 k2) (walk k1 k2)]))
+	   ;; Here we ensure a "minimal" remainder in cases where
+	   ;; after an erasure, a particular key's continuation is the
+	   ;; same as the wildcard's continuation.
+	   ;; TODO: the equal? check may be expensive. If so, how can it be made cheaper?
+	   (rupdate acc key (if (equal? updated-k w) #f updated-k)))
+	 ;; We only need to examine all keys of h1 if w2 nonfalse.
+	 (if w2
+	     (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
+								      (hash-keys h2))
+							   ?))]
+	       (examine-key acc key))
+	     (for/fold [(acc h1)] [(key (in-hash-keys h2))]
+	       (examine-key acc key)))]))
+    (define (walk-wild key k w)
+      (if w
+	  (cond
+	   [(key-open? key) (walk k (rwildseq w))]
+	   [(key-close? key) (if (wildcard-sequence? w)
+				 (walk k (wildcard-sequence-matcher w))
+				 k)]
+	   [else (walk k w)])
+	  k))
+    (lambda (re1 re2)
+      (match* (re1 re2)
+	[(r #f) r]
+	[(#f r) (cofinite-pattern)]
+	[(r1 r2) (walk r1 r2)]))))
 
-(define (matcher-match-value r v [result-nil (set)])
+(define (matcher-match-value r v [failure-result (set)])
   (if (matcher-empty? r)
-      result-nil
+      failure-result
       (let walk ((vs (list v)) (stack '(())) (r r))
 	(define (walk-wild vs stack)
 	  (match (rlookup r ?)
-	    [#f result-nil]
+	    [#f failure-result]
 	    [k (walk vs stack k)]))
 	(match r
 	  [(wildcard-sequence k)
 	   (match stack
-	     ['() result-nil]
+	     ['() failure-result]
 	     [(cons rest stack1) (walk rest stack1 k)])]
 	  [(success result)
 	   (if (and (null? vs)
 		    (null? stack))
 	       result
-	       result-nil)]
+	       failure-result)]
 	  [(? hash?)
 	   (match vs
 	     ['()
 	      (match stack
-		['() result-nil]
+		['() failure-result]
 		[(cons rest stack1)
 		 (match (rlookup r EOS)
-		   [#f result-nil]
+		   [#f failure-result]
 		   [k (walk rest stack1 k)])])]
 	     [(cons (== ?) rest)
 	      (error 'matcher-match-value "Cannot match wildcard as a value")]
@@ -358,18 +367,14 @@
 		[#f (walk-wild rest stack)]
 		[k (walk rest stack k)])])]))))
 
-(define (matcher-match-matcher re1 re2
-			       #:combine [combine-successes (lambda (v1 v2 a)
-							      (cons (set-union (car a) v1)
-								    (set-union (cdr a) v2)))]
-			       #:empty [result-nil (cons (set) (set))])
+(define matcher-match-matcher
   (let ()
     (define (walk re1 re2 acc)
       (match* (re1 re2)
 	[((wildcard-sequence r1) (wildcard-sequence r2)) (walk r1 r2 acc)]
 	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2 acc)]
 	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2) acc)]
-	[((success v1) (success v2)) (combine-successes v1 v2 acc)]
+	[((success v1) (success v2)) ((matcher-match-matcher-successes) v1 v2 acc)]
 	[((? hash? h1) (? hash? h2))
 	 (define w1 (rlookup h1 ?))
 	 (define w2 (rlookup h2 ?))
@@ -398,10 +403,11 @@
 				 acc)]
 	   [else (walker w k acc)])
 	  acc))
-    (match* (re1 re2)
-      [(#f r) result-nil]
-      [(r #f) result-nil]
-      [(r1 r2) (walk r1 r2 result-nil)])))
+    (lambda (re1 re2)
+      (match* (re1 re2)
+	[(#f r) (matcher-match-matcher-unit)]
+	[(r #f) (matcher-match-matcher-unit)]
+	[(r1 r2) (walk r1 r2 (matcher-match-matcher-unit))]))))
 
 (define (matcher-relabel m f)
   (let walk ((m m))
@@ -480,62 +486,63 @@
     		[else (rupdate acc key (capture-nested mk k))])))]
     	[_ (matcher-empty)]))
 
-    (lambda (m spec #:project-success [project-success values])
-      (define (walk capturing? m spec)
-	(match spec
-	  ['()
-	   (when capturing? (error 'matcher-project "Bad specification: unclosed capture"))
-	   (match m
-	     [(success v) (rseq EOS (rseq EOS (rsuccess (project-success v))))]
-	     [_ (matcher-empty)])]
+    (define (walk capturing? m spec)
+      (match spec
+	['()
+	 (when capturing? (error 'matcher-project "Bad specification: unclosed capture"))
+	 (match m
+	   [(success v) (rseq EOS (rseq EOS (rsuccess ((matcher-project-success) v))))]
+	   [_ (matcher-empty)])]
 
-	  [(cons (== EOC) k)
-	   (when (not capturing?) (error 'matcher-project "Bad specification: unexpected EOC"))
-	   (walk #f m k)]
+	[(cons (== EOC) k)
+	 (when (not capturing?) (error 'matcher-project "Bad specification: unexpected EOC"))
+	 (walk #f m k)]
 
-	  [(cons (== SOC) k)
-	   (when capturing? (error 'matcher-project "Bad specification: nested capture"))
-	   (walk #t m k)]
+	[(cons (== SOC) k)
+	 (when capturing? (error 'matcher-project "Bad specification: nested capture"))
+	 (walk #t m k)]
 
-	  [(cons (== ?) k)
-	   (match m
-	     [(wildcard-sequence _)
-	      ((if capturing? rwild values) (walk capturing? m k))]
-	     [(? hash?)
-	      (if capturing?
-		  (for/fold [(acc (rwild (walk capturing? (rlookup m ?) k)))]
-		      [((key mk) (in-hash m))]
-		    (if (eq? key ?)
-			acc
-			(cond
-			 [(key-open? key)
-			  (rupdate acc key (capture-nested mk (lambda (mk)
-								(walk capturing? mk k))))]
-			 [(key-close? key) acc]
-			 [else (rupdate acc key (walk capturing? mk k))])))
-		  (for/fold [(acc (walk capturing? (rlookup m ?) k))] [((key mk) (in-hash m))]
-		    (if (eq? key ?)
-			acc
-			(matcher-union acc (cond
-					    [(key-open? key)
-					     (skip-nested mk (lambda (mk) (walk capturing? mk k)))]
-					    [(key-close? key) #f]
-					    [else (walk capturing? mk k)])))))]
-	     [_ (matcher-empty)])]
+	[(cons (== ?) k)
+	 (match m
+	   [(wildcard-sequence _)
+	    ((if capturing? rwild values) (walk capturing? m k))]
+	   [(? hash?)
+	    (if capturing?
+		(for/fold [(acc (rwild (walk capturing? (rlookup m ?) k)))]
+		    [((key mk) (in-hash m))]
+		  (if (eq? key ?)
+		      acc
+		      (cond
+		       [(key-open? key)
+			(rupdate acc key (capture-nested mk (lambda (mk)
+							      (walk capturing? mk k))))]
+		       [(key-close? key) acc]
+		       [else (rupdate acc key (walk capturing? mk k))])))
+		(for/fold [(acc (walk capturing? (rlookup m ?) k))] [((key mk) (in-hash m))]
+		  (if (eq? key ?)
+		      acc
+		      (matcher-union acc (cond
+					  [(key-open? key)
+					   (skip-nested mk (lambda (mk) (walk capturing? mk k)))]
+					  [(key-close? key) #f]
+					  [else (walk capturing? mk k)])))))]
+	   [_ (matcher-empty)])]
 
-	  [(cons sigma k)
-	   ((if capturing?
-		(lambda (m1) (rseq sigma m1))
-		values)
-	    (match m
-	      [(wildcard-sequence mk)
-	       (if (key-close? sigma)
-		   (walk capturing? mk k)
-		   (walk capturing? m k))]
-	      [(? hash?)
-	       (matcher-union (walk capturing? (rlookup m sigma) k)
-			      (walk capturing? (rlookup m ?) k))]
-	      [_ (matcher-empty)]))]))
+	[(cons sigma k)
+	 ((if capturing?
+	      (lambda (m1) (rseq sigma m1))
+	      values)
+	  (match m
+	    [(wildcard-sequence mk)
+	     (if (key-close? sigma)
+		 (walk capturing? mk k)
+		 (walk capturing? m k))]
+	    [(? hash?)
+	     (matcher-union (walk capturing? (rlookup m sigma) k)
+			    (walk capturing? (rlookup m ?) k))]
+	    [_ (matcher-empty)]))]))
+
+    (lambda (m spec)
       (rseq SOV (walk #f m spec)))))
 
 ;; Matcher → (Option (Setof Value))
@@ -832,8 +839,8 @@
    (list '? (list '- '- '-)) "")
 
   (check-matches
-   (pretty-print-matcher* (matcher-intersect (bigdemo) (pattern->matcher SX (list 'Z ?))
-					     #:combine (lambda (a b) b)))
+   (pretty-print-matcher* (parameterize ((matcher-intersect-successes (lambda (a b) b)))
+			    (matcher-intersect (bigdemo) (pattern->matcher SX (list 'Z ?)))))
    (list 'a '-) ""
    (list 'Z '-) "X"
    (list '? '-) ""
@@ -852,8 +859,8 @@
    (list '? (list '- '- '-)) "")
 
   (check-matches
-   (pretty-print-matcher* (matcher-intersect (bigdemo) (pattern->matcher SX ?)
-					     #:combine (lambda (a b) b)))
+   (pretty-print-matcher* (parameterize ((matcher-intersect-successes (lambda (a b) b)))
+			    (matcher-intersect (bigdemo) (pattern->matcher SX ?))))
    (list 'a '-) "X"
    (list 'Z '-) "X"
    (list '? '-) ""
@@ -878,7 +885,6 @@
     (pretty-print-matcher* r1)
     (pretty-print-matcher* r2)
     (pretty-print-matcher* r12)
-    ;; TODO: these next two are not currently "minimal"
     (pretty-print-matcher* (matcher-erase-path r12 r1))
     (pretty-print-matcher* (matcher-erase-path r12 r2))
     (void))
@@ -955,7 +961,9 @@
 		  (H SOP (H 'a (H SOP (H ? (H '() (H EOS (H EOS (E (set 'A 'D)))))))
 			    'b (H SOP (H ? (H '() (H EOS (H EOS (E (set 'B 'D)))))
 					 'c (H '() (H EOS (H EOS (E (set 'B 'C 'D))))))))))
-    (check-equal? (pretty-print-matcher* (matcher-intersect m1 m2 #:combine (lambda (v1 v2) v1)))
+    (check-equal? (pretty-print-matcher*
+		   (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
+		     (matcher-intersect m1 m2)))
 		  m1))
   )
 
@@ -973,9 +981,10 @@
 			  (pattern->matcher SD (list 'd ?))))))
     (check-equal? (matcher-match-matcher-list abc abc)
 		  (list (set 'A 'B 'C) (set 'A 'B 'C)))
-    (check-equal? (matcher-match-matcher abc abc
-					 #:combine (lambda (v1 v2 a) (set-union v2 a))
-					 #:empty (set))
+    (check-equal? (parameterize ((matcher-match-matcher-successes (lambda (v1 v2 a)
+								    (set-union v2 a)))
+				 (matcher-match-matcher-unit (set)))
+		    (matcher-match-matcher abc abc))
 		  (set 'A 'B 'C))
     (check-equal? (matcher-match-matcher-list abc (matcher-relabel bcd (lambda (old) (set #t))))
 		  (list (set 'B 'C) (set #t)))
@@ -994,120 +1003,107 @@
   (check-equal? (compile-projection (list 'a (?!)))
 		(list SOP 'a SOP SOC ? EOC '() EOS EOS EOS))
 
-  (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						(pattern->matcher SB (list 'a 'b)))
-				 (compile-projection (list 'a (?!)))
-				 #:project-success (lambda (v) #t))
-		(matcher-union (pattern->matcher #t (vector 'a))
-			       (pattern->matcher #t (vector 'b))))
+  (parameterize ((matcher-project-success (lambda (v) #t)))
+    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						  (pattern->matcher SB (list 'a 'b)))
+				   (compile-projection (list 'a (?!))))
+		  (matcher-union (pattern->matcher #t (vector 'a))
+				 (pattern->matcher #t (vector 'b))))
 
-  (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						(pattern->matcher SB (list 'a (vector 'b 'c 'd))))
-				 (compile-projection (list 'a (?!)))
-				 #:project-success (lambda (v) #t))
-		(matcher-union (pattern->matcher #t (vector 'a))
-			       (pattern->matcher #t (vector (vector 'b 'c 'd)))))
+    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						  (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
+				   (compile-projection (list 'a (?!))))
+		  (matcher-union (pattern->matcher #t (vector 'a))
+				 (pattern->matcher #t (vector (vector 'b 'c 'd)))))
 
-  (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						(pattern->matcher SB (list 'a (vector 'b ? 'd))))
-				 (compile-projection (list 'a (?!)))
-				 #:project-success (lambda (v) #t))
-		(matcher-union (pattern->matcher #t (vector 'a))
-			       (pattern->matcher #t (vector (vector 'b ? 'd)))))
+    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						  (pattern->matcher SB (list 'a (vector 'b ? 'd))))
+				   (compile-projection (list 'a (?!))))
+		  (matcher-union (pattern->matcher #t (vector 'a))
+				 (pattern->matcher #t (vector (vector 'b ? 'd)))))
 
-  (check-equal? (matcher-key-set
-		 (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						 (pattern->matcher SB (list 'a 'b)))
-				  (compile-projection (list 'a (?!)))
-				  #:project-success (lambda (v) #t)))
-		(set '#(a) '#(b)))
+    (check-equal? (matcher-key-set
+		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a 'b)))
+				    (compile-projection (list 'a (?!)))))
+		  (set '#(a) '#(b)))
 
-  (check-equal? (matcher-key-set
-		 (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						 (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
-				  (compile-projection (list 'a (?!)))
-				  #:project-success (lambda (v) #t)))
-		(set '#(a) '#(#(b c d))))
+    (check-equal? (matcher-key-set
+		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
+				    (compile-projection (list 'a (?!)))))
+		  (set '#(a) '#(#(b c d))))
 
-  (check-equal? (matcher-key-set
-		 (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						 (pattern->matcher SB (list 'a (vector 'b ? 'd))))
-				  (compile-projection (list 'a (?!)))
-				  #:project-success (lambda (v) #t)))
-		#f)
+    (check-equal? (matcher-key-set
+		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a (vector 'b ? 'd))))
+				    (compile-projection (list 'a (?!)))))
+		  #f)
 
-  (check-equal? (matcher-key-set
-		 (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						 (pattern->matcher SB (list 'a (vector 'b ? 'd))))
-				  (compile-projection (list 'a (?! 'a)))
-				  #:project-success (lambda (v) #t)))
-		(set '#(a)))
+    (check-equal? (matcher-key-set
+		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a (vector 'b ? 'd))))
+				    (compile-projection (list 'a (?! 'a)))))
+		  (set '#(a)))
 
-  (check-equal? (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 3 4)))
-				 (compile-projection (cons (?!) (?!)))
-				 #:project-success (lambda (v) #t))
-		(matcher-union (pattern->matcher #t (vector 1 2))
-			       (pattern->matcher #t (vector 3 4))))
+    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
+						  (pattern->matcher SB (cons 3 4)))
+				   (compile-projection (cons (?!) (?!))))
+		  (matcher-union (pattern->matcher #t (vector 1 2))
+				 (pattern->matcher #t (vector 3 4))))
 
-  (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					(list (pattern->matcher SA (cons 1 2))
-					      (pattern->matcher SB (cons 1 4))
-					      (pattern->matcher SC (cons 3 4))))
-				 (compile-projection (cons (?!) (?!)))
-				 #:project-success (lambda (v) #t))
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher #t (vector 1 2))
-			     (pattern->matcher #t (vector 1 4))
-			     (pattern->matcher #t (vector 3 4)))))
+    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
+					  (list (pattern->matcher SA (cons 1 2))
+						(pattern->matcher SB (cons 1 4))
+						(pattern->matcher SC (cons 3 4))))
+				   (compile-projection (cons (?!) (?!))))
+		  (foldr matcher-union (matcher-empty)
+			 (list (pattern->matcher #t (vector 1 2))
+			       (pattern->matcher #t (vector 1 4))
+			       (pattern->matcher #t (vector 3 4)))))
 
-  (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					(list (pattern->matcher SA (cons 1 2))
-					      (pattern->matcher SB (cons 1 4))
-					      (pattern->matcher SC (cons 3 4))))
-				 (compile-projection (?! (cons ? ?)))
-				 #:project-success (lambda (v) #t))
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher #t (vector (cons 1 2)))
-			     (pattern->matcher #t (vector (cons 1 4)))
-			     (pattern->matcher #t (vector (cons 3 4))))))
+    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
+					  (list (pattern->matcher SA (cons 1 2))
+						(pattern->matcher SB (cons 1 4))
+						(pattern->matcher SC (cons 3 4))))
+				   (compile-projection (?! (cons ? ?))))
+		  (foldr matcher-union (matcher-empty)
+			 (list (pattern->matcher #t (vector (cons 1 2)))
+			       (pattern->matcher #t (vector (cons 1 4)))
+			       (pattern->matcher #t (vector (cons 3 4))))))
 
-  (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					(list (pattern->matcher SA (cons 1 2))
-					      (pattern->matcher SB (cons 1 4))
-					      (pattern->matcher SC (cons 3 4))))
-				 (compile-projection (?! (cons 1 ?)))
-				 #:project-success (lambda (v) #t))
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher #t (vector (cons 1 2)))
-			     (pattern->matcher #t (vector (cons 1 4))))))
+    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
+					  (list (pattern->matcher SA (cons 1 2))
+						(pattern->matcher SB (cons 1 4))
+						(pattern->matcher SC (cons 3 4))))
+				   (compile-projection (?! (cons 1 ?))))
+		  (foldr matcher-union (matcher-empty)
+			 (list (pattern->matcher #t (vector (cons 1 2)))
+			       (pattern->matcher #t (vector (cons 1 4))))))
 
-  (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					(list (pattern->matcher SA (cons 1 2))
-					      (pattern->matcher SB (cons 1 4))
-					      (pattern->matcher SC (cons 3 4))))
-				 (compile-projection (cons (?! 1) (?!)))
-				 #:project-success (lambda (v) #t))
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher #t (vector 1 2))
-			     (pattern->matcher #t (vector 1 4)))))
+    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
+					  (list (pattern->matcher SA (cons 1 2))
+						(pattern->matcher SB (cons 1 4))
+						(pattern->matcher SC (cons 3 4))))
+				   (compile-projection (cons (?! 1) (?!))))
+		  (foldr matcher-union (matcher-empty)
+			 (list (pattern->matcher #t (vector 1 2))
+			       (pattern->matcher #t (vector 1 4)))))
 
-  (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					(list (pattern->matcher SA (cons 1 2))
-					      (pattern->matcher SB (cons 1 4))
-					      (pattern->matcher SC (cons 3 4))))
-				 (compile-projection (cons (?!) (?! 4)))
-				 #:project-success (lambda (v) #t))
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher #t (vector 1 4))
-			     (pattern->matcher #t (vector 3 4)))))
+    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
+					  (list (pattern->matcher SA (cons 1 2))
+						(pattern->matcher SB (cons 1 4))
+						(pattern->matcher SC (cons 3 4))))
+				   (compile-projection (cons (?!) (?! 4))))
+		  (foldr matcher-union (matcher-empty)
+			 (list (pattern->matcher #t (vector 1 4))
+			       (pattern->matcher #t (vector 3 4)))))
 
-  (check-equal? (matcher-key-set
-		 (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
-						 (pattern->matcher SB (cons 3 4)))
-				  (compile-projection (cons (?!) (?!)))
-				  #:project-success (lambda (v) #t)))
-		(set '#(1 2) '#(3 4)))
+    (check-equal? (matcher-key-set
+		   (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
+						   (pattern->matcher SB (cons 3 4)))
+				    (compile-projection (cons (?!) (?!)))))
+		  (set '#(1 2) '#(3 4))))
 
   (check-equal? (projection->pattern (list 'a 'b)) (list 'a 'b))
   (check-equal? (projection->pattern (list 'a ?)) (list 'a ?))
