@@ -529,12 +529,16 @@
 	      values)
 	  (match m
 	    [(wildcard-sequence mk)
-	     (if (key-close? sigma)
-		 (walk capturing? mk k)
-		 (walk capturing? m k))]
+	     (cond
+	      [(key-open? sigma) (walk capturing? (rwildseq m) k)]
+	      [(key-close? sigma) (walk capturing? mk k)]
+	      [else (walk capturing? m k)])]
 	    [(? hash?)
 	     (matcher-union (walk capturing? (rlookup m sigma) k)
-			    (walk capturing? (rlookup m ?) k))]
+			    (cond
+			     [(key-open? sigma) (walk capturing? (rwildseq (rlookup m ?)) k)]
+			     [(key-close? sigma) #f]
+			     [else (walk capturing? (rlookup m ?) k)]))]
 	    [_ (matcher-empty)]))]))
 
     (lambda (m spec)
@@ -638,6 +642,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (module+ test
+  (require racket/pretty)
+
   (define SA (set 'A))
   (define SB (set 'B))
   (define SC (set 'C))
@@ -1105,6 +1111,11 @@
 						   (pattern->matcher SB (cons 3 4)))
 				    (compile-projection (cons (?!) (?!)))))
 		  (set '#(1 2) '#(3 4))))
+
+  (check-equal? (matcher-project (matcher-union (pattern->matcher SA ?)
+						 (pattern->matcher SB (list 'a)))
+				 (compile-projection (?! (list (list ?)))))
+		(pattern->matcher SA (vector (list (list ?)))))
 
   (check-equal? (projection->pattern (list 'a 'b)) (list 'a 'b))
   (check-equal? (projection->pattern (list 'a ?)) (list 'a ?))
