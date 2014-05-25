@@ -242,6 +242,7 @@
 					 known-targets)
 		 w))
 
+;; TODO: interests coming from the environment must not be reflected back at it
 (define (issue-routing-update w relevant-gestalt known-targets)
   (transition (issue-local-routing-update w relevant-gestalt known-targets)
               (routing-update (drop-gestalt (world-aggregate-gestalt w)))))
