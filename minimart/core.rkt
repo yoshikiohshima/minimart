@@ -228,7 +228,7 @@
     [#f w]
     [p (struct-copy world w [process-table (hash-set pt pid (fp p))])]))
 
-(define (update-aggregate-gestalt w pid old-g new-g)
+(define (update-aggregate-gestalt w old-g new-g)
   (struct-copy world w [aggregate-gestalt
 			(gestalt-union (gestalt-erase-path (world-aggregate-gestalt w)
 							   old-g)
@@ -244,8 +244,8 @@
   (transition (issue-local-routing-update w relevant-gestalt known-targets)
               (routing-update (drop-gestalt (world-aggregate-gestalt w)))))
 
-(define (apply-and-issue-routing-update w pid old-gestalt new-gestalt known-targets)
-  (issue-routing-update (update-aggregate-gestalt w pid old-gestalt new-gestalt)
+(define (apply-and-issue-routing-update w old-gestalt new-gestalt known-targets)
+  (issue-routing-update (update-aggregate-gestalt w old-gestalt new-gestalt)
 			(gestalt-union old-gestalt new-gestalt)
 			known-targets))
 
@@ -260,7 +260,7 @@
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
        (log-info "Spawned process ~a ~v ~v" new-pid (process-behavior new-p) (process-state new-p))
-       (apply-and-issue-routing-update w new-pid (gestalt-empty) new-gestalt (set new-pid)))]
+       (apply-and-issue-routing-update w (gestalt-empty) new-gestalt (set new-pid)))]
     [(quit)
      (define pt (world-process-table w))
      (define p (hash-ref pt pid (lambda () #f)))
@@ -269,7 +269,7 @@
 	   (log-info "Process ~a terminating; ~a processes remain"
 		     pid
 		     (hash-count (world-process-table w)))
-	   (apply-and-issue-routing-update w pid (process-gestalt p) (gestalt-empty) (set)))
+	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) (set)))
 	 (transition w '()))]
     [(routing-update gestalt)
      (define pt (world-process-table w))
@@ -279,7 +279,7 @@
 		(new-gestalt (label-gestalt gestalt pid))
 		(new-p (struct-copy process p [gestalt new-gestalt]))
 		(w (struct-copy world w [process-table (hash-set pt pid new-p)])))
-	   (apply-and-issue-routing-update w pid old-gestalt new-gestalt (set)))
+	   (apply-and-issue-routing-update w old-gestalt new-gestalt (set)))
 	 (transition w '()))]
     [(message body meta-level feedback?)
      (if (zero? meta-level)
@@ -326,7 +326,7 @@
     [(routing-update g)
      (define old-downward (world-downward-gestalt w))
      (define new-downward (lift-gestalt (label-gestalt g 'out)))
-     (issue-local-routing-update (update-aggregate-gestalt w 'out old-downward new-downward)
+     (issue-local-routing-update (update-aggregate-gestalt w old-downward new-downward)
 				 (gestalt-union old-downward new-downward)
 				 (set))]
     [(message body meta-level feedback?)
