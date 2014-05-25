@@ -35,7 +35,11 @@
 	 matcher-project-success)
 
 ;; TODO: perhaps avoid the parameters on the fast-path, if they are causing measurable slowdown.
-(define matcher-union-successes (make-parameter set-union))
+(define matcher-union-successes (make-parameter (lambda (v1 v2)
+						  (match* (v1 v2)
+						    [(#t v) v]
+						    [(v #t) v]
+						    [(v1 v2) (set-union v1 v2)]))))
 (define matcher-intersect-successes (make-parameter set-union))
 (define matcher-erase-path-successes (make-parameter (lambda (s1 s2)
 						       (define r (set-subtract s1 s2))
@@ -1105,6 +1109,22 @@
 		  (foldr matcher-union (matcher-empty)
 			 (list (pattern->matcher #t (vector 1 4))
 			       (pattern->matcher #t (vector 3 4)))))
+
+    (check-equal? (matcher-key-set
+		   (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SC (cons ? 3))
+						 (pattern->matcher SB (cons 3 4))))
+				    (compile-projection (cons (?!) (?!)))))
+		  #f)
+
+    (check-equal? (matcher-key-set
+		   (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons ? 2))
+						 (pattern->matcher SC (cons 1 3))
+						 (pattern->matcher SB (cons 3 4))))
+				    (compile-projection (cons ? (?!)))))
+		  (set '#(2) '#(3) '#(4)))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))

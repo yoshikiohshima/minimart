@@ -168,16 +168,11 @@
 
 ;; View on g1 from g2's perspective.
 (define (gestalt-filter g1 g2)
-  (parameterize ((matcher-union-successes (lambda (v1 v2)
-					    (match* (v1 v2)
-					      [(#t v) v]
-					      [(v #t) v]
-					      [(v1 v2) (set-union v1 v2)]))))
-    (gestalt (map-zip shorter-imbalance-handler
-		      filter-one-metalevel
-		      cons-metalevel
-		      (gestalt-metalevels g1)
-		      (gestalt-metalevels g2)))))
+  (gestalt (map-zip shorter-imbalance-handler
+		    filter-one-metalevel
+		    cons-metalevel
+		    (gestalt-metalevels g1)
+		    (gestalt-metalevels g2))))
 
 ;; Much like gestalt-filter, takes a view on gestalt g1 from g2's
 ;; perspective. However, instead of returning the filtered g1, returns
