@@ -39,6 +39,8 @@
 (define pid-stack (make-parameter '()))
 (define log-events-and-actions? (make-parameter #f))
 
+;; TODO: support +Inf.0 as a level number
+
 ;; Events
 (struct routing-update (gestalt) #:prefab)
 (struct message (body meta-level feedback?) #:prefab)
