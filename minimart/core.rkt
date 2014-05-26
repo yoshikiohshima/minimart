@@ -57,9 +57,10 @@
 (struct world (next-pid			;; Natural, PID for next-spawned process
 	       event-queue		;; Queue of Event
 	       runnable-pids		;; Set of PIDs
-	       aggregate-gestalt	;; Gestalt mapping to PID
+	       partial-gestalt		;; Gestalt from local processes only; maps to PID
+	       full-gestalt		;; Union of partial-gestalt and downward-gestalt
 	       process-table		;; Hash from PID to Process
-	       downward-gestalt		;; GestaltSet representing interests of outside world
+	       downward-gestalt		;; Gestalt representing interests of outside world
 	       process-actions		;; Queue of (cons PID Action)
 	       ) #:transparent)
 
@@ -81,6 +82,7 @@
 	 (enqueue-actions (world 0
 				 (make-queue)
 				 (set)
+				 (gestalt-empty)
 				 (gestalt-empty)
 				 (hash)
 				 (gestalt-empty)
@@ -230,25 +232,24 @@
     [#f w]
     [p (struct-copy world w [process-table (hash-set pt pid (fp p))])]))
 
-(define (update-aggregate-gestalt w old-g new-g)
-  (struct-copy world w [aggregate-gestalt
-			(gestalt-union (gestalt-erase-path (world-aggregate-gestalt w)
-							   old-g)
-				       new-g)]))
+(define (update-full-gestalt w)
+  (struct-copy world w [full-gestalt
+			(gestalt-union (world-partial-gestalt w) (world-downward-gestalt w))]))
 
 (define (issue-local-routing-update w relevant-gestalt known-targets)
-  (enqueue-event (pending-routing-update (world-aggregate-gestalt w)
+  (enqueue-event (pending-routing-update (world-full-gestalt w)
 					 relevant-gestalt
 					 known-targets)
 		 w))
 
-;; TODO: interests coming from the environment must not be reflected back at it
 (define (issue-routing-update w relevant-gestalt known-targets)
   (transition (issue-local-routing-update w relevant-gestalt known-targets)
-              (routing-update (drop-gestalt (world-aggregate-gestalt w)))))
+              (routing-update (drop-gestalt (world-partial-gestalt w)))))
 
 (define (apply-and-issue-routing-update w old-gestalt new-gestalt known-targets)
-  (issue-routing-update (update-aggregate-gestalt w old-gestalt new-gestalt)
+  (define new-partial
+    (gestalt-union (gestalt-erase-path (world-partial-gestalt w) old-gestalt) new-gestalt))
+  (issue-routing-update (update-full-gestalt (struct-copy world w [partial-gestalt new-partial]))
 			(gestalt-union old-gestalt new-gestalt)
 			known-targets))
 
@@ -292,7 +293,7 @@
 (define (dispatch-event e w)
   (match e
     [(message body meta-level feedback?)
-     (define pids (gestalt-match-value (world-aggregate-gestalt w) body meta-level feedback?))
+     (define pids (gestalt-match-value (world-partial-gestalt w) body meta-level feedback?))
      (define pt (world-process-table w))
      (for/fold ([w w]) [(pid (in-set pids))]
        (apply-transition pid (deliver-event e pid (hash-ref pt pid)) w))]
@@ -330,7 +331,8 @@
     [(routing-update g)
      (define old-downward (world-downward-gestalt w))
      (define new-downward (lift-gestalt (label-gestalt g 'out)))
-     (issue-local-routing-update (update-aggregate-gestalt w old-downward new-downward)
+     (issue-local-routing-update (update-full-gestalt
+				  (struct-copy world w [downward-gestalt new-downward]))
 				 (gestalt-union old-downward new-downward)
 				 (set))]
     [(message body meta-level feedback?)
