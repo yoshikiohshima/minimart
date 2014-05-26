@@ -272,7 +272,7 @@
 	   (log-info "Process ~a terminating; ~a processes remain"
 		     pid
 		     (hash-count (world-process-table w)))
-	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) (set)))
+	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) (set pid)))
 	 (transition w '()))]
     [(routing-update gestalt)
      (define pt (world-process-table w))
@@ -300,9 +300,10 @@
      (define affected-pids (gestalt-match affected-subgestalt g))
      (define pt (world-process-table w))
      (for/fold ([w w]) [(pid (in-set (set-union known-targets affected-pids)))]
-       (define p (hash-ref pt pid))
-       (define g1 (gestalt-filter g (process-gestalt p)))
-       (apply-transition pid (deliver-event (routing-update g1) pid p) w))]))
+       (match (hash-ref pt pid (lambda () #f))
+	 [#f w]
+	 [p (define g1 (gestalt-filter g (process-gestalt p)))
+	    (apply-transition pid (deliver-event (routing-update g1) pid p) w)]))]))
 
 ;; This is roughly the "schedule" rule of the calculus.
 (define (step-children w)
