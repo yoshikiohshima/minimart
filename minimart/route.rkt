@@ -1176,11 +1176,14 @@
   (let ((A (pattern->matcher SA ?))
 	(B (pattern->matcher SB (list (list (list (list 'foo)))))))
     (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
-		  A
-		  'x))
+		  A))
   (let ((A (pattern->matcher SA ?))
 	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
     (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
-		  A
-		  'x)))
+		  A))
+  (let ((A (pattern->matcher SA ?))
+	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
+			  (pattern->matcher SB (list (list (list (list 'bar))))))))
+    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) A))
+		  B)))
