@@ -50,7 +50,7 @@
 (struct quit () #:prefab)
 
 ;; Intra-world signalling
-(struct pending-routing-update (aggregate affected-subgestalt known-targets) #:prefab)
+(struct pending-routing-update (aggregate affected-subgestalt known-target) #:prefab)
 
 ;; Actors and Configurations
 (struct process (gestalt behavior state) #:transparent)
@@ -148,8 +148,8 @@
 ;; Note that routing-update actions are queued internally as
 ;; pending-routing-update structures, in order to preserve and
 ;; communicate transient gestalt states to processes. In addition, the
-;; known-targets field of a pending-routing-update structure is used
-;; to provide NC's initial gestalt signal to a newly-spawned process.
+;; known-target field of a pending-routing-update structure is used to
+;; provide NC's initial gestalt signal to a newly-spawned process.
 ;;
 ;; TODO: should step 3 occur before step 1?
 
@@ -236,22 +236,22 @@
   (struct-copy world w [full-gestalt
 			(gestalt-union (world-partial-gestalt w) (world-downward-gestalt w))]))
 
-(define (issue-local-routing-update w relevant-gestalt known-targets)
+(define (issue-local-routing-update w relevant-gestalt known-target)
   (enqueue-event (pending-routing-update (world-full-gestalt w)
 					 relevant-gestalt
-					 known-targets)
+					 known-target)
 		 w))
 
-(define (issue-routing-update w relevant-gestalt known-targets)
-  (transition (issue-local-routing-update w relevant-gestalt known-targets)
+(define (issue-routing-update w relevant-gestalt known-target)
+  (transition (issue-local-routing-update w relevant-gestalt known-target)
               (routing-update (drop-gestalt (world-partial-gestalt w)))))
 
-(define (apply-and-issue-routing-update w old-gestalt new-gestalt known-targets)
+(define (apply-and-issue-routing-update w old-gestalt new-gestalt known-target)
   (define new-partial
     (gestalt-union (gestalt-erase-path (world-partial-gestalt w) old-gestalt) new-gestalt))
   (issue-routing-update (update-full-gestalt (struct-copy world w [partial-gestalt new-partial]))
 			(gestalt-union old-gestalt new-gestalt)
-			known-targets))
+			known-target))
 
 (define ((perform-action pid a) w)
   (match a
@@ -264,7 +264,7 @@
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
        (log-info "Spawned process ~a ~v ~v" new-pid (process-behavior new-p) (process-state new-p))
-       (apply-and-issue-routing-update w (gestalt-empty) new-gestalt (set new-pid)))]
+       (apply-and-issue-routing-update w (gestalt-empty) new-gestalt new-pid))]
     [(quit)
      (define pt (world-process-table w))
      (define p (hash-ref pt pid (lambda () #f)))
@@ -273,7 +273,7 @@
 	   (log-info "Process ~a terminating; ~a processes remain"
 		     pid
 		     (hash-count (world-process-table w)))
-	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) (set pid)))
+	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) pid))
 	 (transition w '()))]
     [(routing-update gestalt)
      (define pt (world-process-table w))
@@ -283,7 +283,7 @@
 		(new-gestalt (label-gestalt gestalt pid))
 		(new-p (struct-copy process p [gestalt new-gestalt]))
 		(w (struct-copy world w [process-table (hash-set pt pid new-p)])))
-	   (apply-and-issue-routing-update w old-gestalt new-gestalt (set)))
+	   (apply-and-issue-routing-update w old-gestalt new-gestalt #f))
 	 (transition w '()))]
     [(message body meta-level feedback?)
      (if (zero? meta-level)
@@ -297,10 +297,10 @@
      (define pt (world-process-table w))
      (for/fold ([w w]) [(pid (in-set pids))]
        (apply-transition pid (deliver-event e pid (hash-ref pt pid)) w))]
-    [(pending-routing-update g affected-subgestalt known-targets)
+    [(pending-routing-update g affected-subgestalt known-target)
      (define affected-pids (gestalt-match affected-subgestalt g))
      (define pt (world-process-table w))
-     (for/fold ([w w]) [(pid (in-set (set-union known-targets affected-pids)))]
+     (for/fold ([w w]) [(pid (in-set (set-add affected-pids known-target)))]
        (match (hash-ref pt pid (lambda () #f))
 	 [#f w]
 	 [p (define g1 (gestalt-filter g (process-gestalt p)))
@@ -334,7 +334,7 @@
      (issue-local-routing-update (update-full-gestalt
 				  (struct-copy world w [downward-gestalt new-downward]))
 				 (gestalt-union old-downward new-downward)
-				 (set))]
+				 #f)]
     [(message body meta-level feedback?)
      (enqueue-event (message body (+ meta-level 1) feedback?) w)]))
 
