@@ -147,13 +147,6 @@
 		     (cons (matcher-combiner (car sa1) (car sa2))
 			   (matcher-combiner (cdr sa1) (cdr sa2))))))
 
-(define (gestalt-combine-crossed g1 g2 imbalance-handler matcher-combiner)
-  (gestalt-combine g1 g2
-		   imbalance-handler
-		   (lambda (sa1 sa2)
-		     (cons (matcher-combiner (car sa1) (cdr sa2))
-			   (matcher-combiner (car sa2) (cdr sa1))))))
-
 (define (gestalt-union . gs)
   (if (null? gs)
       (gestalt-empty)
