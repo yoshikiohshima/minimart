@@ -51,10 +51,6 @@
 ;; Convention: A GestaltSet is a Gestalt where the Matchers map to #t
 ;; instead of (NonemptySetof PID) or any other value.
 
-;; TODO: consider caching the unioning that happens when a high-level
-;; subscription is smeared across lower levels for the purposes of
-;; filtering and matching of routing-updates.
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (safe-list-ref xs n [fail-thunk (lambda () (error 'safe-list-ref "No such index ~v" n))])
@@ -157,68 +153,73 @@
 
 (define (gestalt-union1 g1 g2) (gestalt-combine-straight g1 g2 (lambda (side x) x) matcher-union))
 
-(define (shorter-imbalance-handler side x) '())
-
 ;; View on g1 from g2's perspective.
-(define (gestalt-filter g1 g2)
-  (gestalt (map-zip shorter-imbalance-handler
-		    filter-one-metalevel
-		    cons-metalevel
-		    (gestalt-metalevels g1)
-		    (gestalt-metalevels g2))))
+(define gestalt-filter
+  (let ()
+    (define (filter-metalevels mls1 mls2)
+      (match* (mls1 mls2)
+	[('() _) '()]
+	[(_ '()) '()]
+	[((cons ls1 mrest1) (cons ls2-unshifted mrest2))
+	 (cons-metalevel (filter-levels ls1 (safe-cdr ls2-unshifted))
+			 (filter-metalevels mrest1 mrest2))]))
+
+    (define (filter-levels ls1 ls2)
+      (match ls1
+	['() '()]
+	[(cons (cons subs1 advs1) lrest1)
+	 (if (null? ls2)
+	     '()
+	     (cons-level (filter-single-level subs1 advs1 ls2)
+			 (filter-levels lrest1 (cdr ls2))))]))
+
+    (define (filter-single-level subs1 advs1 ls2)
+      (let loop ((ls2 ls2) (subs #f) (advs #f))
+	(match ls2
+	  ['() (cons subs advs)]
+	  [(cons (cons subs2 advs2) lrest2)
+	   (loop lrest2
+		 (matcher-union subs (matcher-intersect subs1 advs2))
+		 (matcher-union advs (matcher-intersect advs1 subs2)))])))
+
+    (lambda (g1 g2)
+      (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
+	(gestalt (filter-metalevels (gestalt-metalevels g1) (gestalt-metalevels g2)))))))
 
 ;; Much like gestalt-filter, takes a view on gestalt g1 from g2's
 ;; perspective. However, instead of returning the filtered g1, returns
 ;; just the set of values in the g2-map that were overlapped by some
 ;; part of g1.
-(define (gestalt-match g1 g2)
-  (let loop ((mls1 (gestalt-metalevels g1))
-	     (mls2 (gestalt-metalevels g2)))
-    (cond [(null? mls1) (set)]
-	  [(null? mls2) (set)]
-	  [else (match-define (cons ls1 rest1) mls1)
-		(match-define (cons ls2 rest2) mls2)
-		(set-union (match-one-metalevel ls1 ls2)
-			   (loop rest1 rest2))])))
+(define gestalt-match
+  (let ()
+    (define (match-metalevels mls1 mls2 acc)
+      (match* (mls1 mls2)
+	[('() _) acc]
+	[(_ '()) acc]
+	[((cons ls1 mrest1) (cons ls2-unshifted mrest2))
+	 (match-levels ls1 (cdr ls2-unshifted) (match-metalevels mrest1 mrest2 acc))]))
 
-;; Returns ls, with one level dropped, and with the remaining matchers
-;; "smeared" across lower levels. This could end up being reasonably
-;; expensive - see above TODO about possibly caching it.
-(define (smear-levels ls)
-  (foldr (lambda (p acc)
-	   (match-define (cons acc-subs acc-advs) (if (null? acc) empty-level (car acc)))
-	   (match-define (cons new-subs new-advs) p)
-	   (cons (cons (matcher-union new-subs acc-subs)
-		       (matcher-union new-advs acc-advs))
-		 acc))
-	 '()
-	 (safe-cdr ls)))
+    (define (match-levels ls1 ls2 acc)
+      (match ls1
+	['() acc]
+	[(cons (cons subs1 advs1) lrest1)
+	 (if (null? ls2)
+	     acc
+	     (match-single-level subs1 advs1 ls2 (match-levels lrest1 (cdr ls2) acc)))]))
 
-(define (filter-one-metalevel ls1 ls2)
-  (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
-    (let loop ((ls1 ls1) (ls2 (smear-levels ls2)))
-      (cond [(null? ls1) '()]
-	    [(null? ls2) '()]
-	    [else (match-define (cons (cons subs1 advs1) rest1) ls1)
-		  (match-define (cons (cons subs2 advs2) rest2) ls2)
-		  (cons-level (cons (matcher-intersect subs1 advs2)
-				    (matcher-intersect advs1 subs2))
-			      (loop rest1 rest2))]))))
+    (define (match-single-level subs1 advs1 ls2 acc)
+      (let loop ((ls2 ls2) (acc acc))
+	(match ls2
+	  ['() acc]
+	  [(cons (cons subs2 advs2) lrest2)
+	   (loop lrest2 (set-union (matcher-match-matcher subs1 advs2)
+				   (matcher-match-matcher advs1 subs2)
+				   acc))])))
 
-(define (match-matchers m1 m2)
-  (parameterize ((matcher-match-matcher-successes (lambda (v1 v2 acc) (set-union v2 acc)))
-		 (matcher-match-matcher-unit (set)))
-    (matcher-match-matcher m1 m2)))
-
-(define (match-one-metalevel ls1 ls2)
-  (let loop ((ls1 ls1) (ls2 (smear-levels ls2)))
-    (cond [(null? ls1) (set)]
-	  [(null? ls2) (set)]
-	  [else (match-define (cons (cons subs1 advs1) rest1) ls1)
-		(match-define (cons (cons subs2 advs2) rest2) ls2)
-		(set-union (match-matchers subs1 advs2)
-			   (match-matchers advs1 subs2)
-			   (loop rest1 rest2))])))
+    (lambda (g1 g2)
+      (parameterize ((matcher-match-matcher-successes (lambda (v1 v2 acc) (set-union v2 acc)))
+		     (matcher-match-matcher-unit (set)))
+	(match-metalevels (gestalt-metalevels g1) (gestalt-metalevels g2) (set))))))
 
 (define (gestalt-erase-path g1 g2)
   (gestalt-combine-straight g1 g2
