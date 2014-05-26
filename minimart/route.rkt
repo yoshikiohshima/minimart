@@ -293,15 +293,26 @@
 	   ;; after an erasure, a particular key's continuation is the
 	   ;; same as the wildcard's continuation.
 	   ;; TODO: the equal? check may be expensive. If so, how can it be made cheaper?
-	   (rupdate acc key (if (equal? updated-k w) #f updated-k)))
+	   (cond
+	    [(key-open? key)
+	     (if (and (wildcard-sequence? updated-k)
+		      (equal? (wildcard-sequence-matcher updated-k) w))
+		 (rupdate acc key #f)
+		 (rupdate acc key updated-k))]
+	    [(key-close? key)
+	     ;; We will check whether this can be removed later, in collapse-wildcard-sequences.
+	     (rupdate acc key updated-k)]
+	    [else
+	     (rupdate acc key (if (equal? updated-k w) #f updated-k))]))
 	 ;; We only need to examine all keys of h1 if w2 nonfalse.
-	 (if w2
-	     (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
-								      (hash-keys h2))
-							   ?))]
-	       (examine-key acc key))
-	     (for/fold [(acc h1)] [(key (in-hash-keys h2))]
-	       (examine-key acc key)))]))
+	 (collapse-wildcard-sequences
+	  (if w2
+	      (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
+								       (hash-keys h2))
+							    ?))]
+		(examine-key acc key))
+	      (for/fold [(acc h1)] [(key (in-hash-keys h2))]
+		(examine-key acc key))))]))
     (define (walk-wild key k w)
       (if w
 	  (cond
@@ -316,6 +327,22 @@
 	[(r #f) r]
 	[(#f r) (cofinite-pattern)]
 	[(r1 r2) (walk r1 r2)]))))
+
+(define (collapse-wildcard-sequences m)
+  (match m
+    [(? hash? h)
+     (define w (rlookup h ?))
+     (if (and (wildcard-sequence? w)
+	      (= (hash-count h) 2))
+	 (match (set->list (set-remove (hash-keys h) ?))
+	   [(list (? key-close? other-key))
+	    (define k (rlookup h other-key))
+	    (if (equal? k (wildcard-sequence-matcher w))
+		w
+		h)]
+	   [_ h])
+	 h)]
+    [other other]))
 
 (define (matcher-match-value r v [failure-result (set)])
   (if (matcher-empty? r)
@@ -1144,3 +1171,16 @@
   (check-equal? (projection->pattern (list 'a (?! (vector 'b)))) (list 'a (vector 'b)))
   (check-equal? (projection->pattern (list 'a (?! (vector ? ?)))) (list 'a (vector ? ?)))
   )
+
+(module+ test
+  (let ((A (pattern->matcher SA ?))
+	(B (pattern->matcher SB (list (list (list (list 'foo)))))))
+    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+		  A
+		  'x))
+  (let ((A (pattern->matcher SA ?))
+	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
+			  (pattern->matcher SB (list (list (list (list 'bar))))))))
+    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+		  A
+		  'x)))
