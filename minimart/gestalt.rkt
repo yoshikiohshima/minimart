@@ -262,14 +262,14 @@
 	    (when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
 	    (when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9)))))))
 
-(define (gestalt->jsexpr g success->jsexpr)
+(define (gestalt->jsexpr g [success->jsexpr (lambda (v) #t)])
   (list "gestalt" (for/list [(ls (in-list (gestalt-metalevels g)))]
 		    (for/list [(l (in-list ls))]
 		      (match-define (cons subs advs) l)
 		      (list (matcher->jsexpr subs success->jsexpr)
 			    (matcher->jsexpr advs success->jsexpr))))))
 
-(define (jsexpr->gestalt j jsexpr->success)
+(define (jsexpr->gestalt j [jsexpr->success (lambda (v) #t)])
   (match j
     [(list "gestalt" mlsj)
      (gestalt (for/list [(lsj (in-list mlsj))]
