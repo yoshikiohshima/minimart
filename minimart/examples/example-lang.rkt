@@ -20,7 +20,7 @@
 
 (define (r e s)
   (match e
-    [(message body _ _) (transition s (send `(print got ,body) #:meta-level 1))]
+    [(message body _ _) (transition s (send `(print (got ,body)) #:meta-level 1))]
     [_ #f]))
 
 (define (b e n)
@@ -36,7 +36,7 @@
 (define (echoer e s)
   (match e
     [(message (event _ (list (? eof-object?))) _ _) (transition s (quit))]
-    [(message (event _ (list line)) _ _) (transition s (send `(print got-line ,line)))]
+    [(message (event _ (list line)) _ _) (transition s (send `(print (got-line ,line))))]
     [_ #f]))
 
 (spawn echoer (void) (sub (event (read-line-evt (current-input-port) 'any) ?)
@@ -63,9 +63,9 @@
 
 (define (printer e s)
   (match e
-    [(message (cons 'print v) _ _)
+    [(message (list 'print v) _ _)
      (log-info "PRINTER: ~a" v)
      #f]
     [_ #f]))
 
-(spawn printer (void) (sub `(print . ,?)))
+(spawn printer (void) (sub `(print ,?)))

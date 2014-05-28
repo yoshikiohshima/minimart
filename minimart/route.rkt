@@ -62,12 +62,14 @@
 
 ;; A Sigma is, roughly, a token in a value being matched. It is one of:
 ;;  - a struct-type, signifying the start of a struct.
-;;  - start-of-pair, signifying the start of a pair.
+;;  - start-of-list, signifying the start of a list.
 ;;  - start-of-vector, signifying the start of a vector.
+;;  - improper-list-marker, signifying the transition into the cdr position of a pair
 ;;  - end-of-sequence, signifying the notional close-paren at the end of a compound.
 ;;  - any other value, representing itself.
-(define-singleton-struct SOP start-of-pair "<pair")
+(define-singleton-struct SOL start-of-list "<")
 (define-singleton-struct SOV start-of-vector "<vector")
+(define-singleton-struct ILM improper-list-marker "|")
 (define-singleton-struct EOS end-of-sequence ">")
 
 ;; A Pattern is an atom, the special wildcard value, or a Racket
@@ -128,7 +130,11 @@
   (let walk ((p p) (acc (rseq EOS (rsuccess v))))
     (match p
       [(== ?) (rwild acc)]
-      [(cons p1 p2) (rseq SOP (walk p1 (walk p2 (rseq EOS acc))))]
+      [(cons p1 p2) (rseq SOL (walk p1 (let walk-list ((p p2))
+					 (match p
+					   ['() (rseq EOS acc)]
+					   [(cons p1 p2) (walk p1 (walk-list p2))]
+					   [other (rseq ILM (walk other (rseq EOS acc)))]))))]
       [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
@@ -152,7 +158,7 @@
       (hash-set (or r (hash)) key k)))
 
 (define (key-open? k)
-  (or (eq? k SOP)
+  (or (eq? k SOL)
       (eq? k SOV)
       (struct-type? k)))
 
@@ -344,6 +350,12 @@
 	 h)]
     [other other]))
 
+(define (transform-list-value xs)
+  (match xs
+    ['() '()]
+    [(cons x xs) (cons x (transform-list-value xs))]
+    [other (cons ILM (cons other '()))]))
+
 (define (matcher-match-value r v [failure-result (set)])
   (if (matcher-empty? r)
       failure-result
@@ -374,9 +386,9 @@
 	     [(cons (== ?) rest)
 	      (error 'matcher-match-value "Cannot match wildcard as a value")]
 	     [(cons (cons v1 v2) rest)
-	      (match (rlookup r SOP)
+	      (match (rlookup r SOL)
 		[#f (walk-wild rest stack)]
-		[k (walk (list v1 v2) (cons rest stack) k)])]
+		[k (walk (cons v1 (transform-list-value v2)) (cons rest stack) k)])]
 	     [(cons (vector vv ...) rest)
 	      (match (rlookup r SOV)
 		[#f (walk-wild rest stack)]
@@ -451,7 +463,11 @@
     (match p
       [(capture sub) (cons SOC (walk sub (cons EOC acc)))] ;; TODO: enforce non-nesting here
       [(== ?) (cons ? acc)]
-      [(cons p1 p2) (cons SOP (walk p1 (walk p2 (cons EOS acc))))]
+      [(cons p1 p2) (cons SOL (walk p1 (let walk-list ((p p2))
+					 (match p
+					   ['() (cons EOS acc)]
+					   [(cons p1 p2) (walk p1 (walk-list p2))]
+					   [other (cons ILM (walk other (cons EOS acc)))]))))]
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
@@ -575,6 +591,13 @@
     (lambda (m spec)
       (rseq SOV (walk #f m spec)))))
 
+(define (untransform-list-value vs)
+  (match vs
+    ['() '()]
+    [(cons (== ILM) (cons v '())) v]
+    [(cons (== ILM) _) (error 'untransform-list-value "Illegal use of ILM" vs)]
+    [(cons v vs) (cons v (untransform-list-value vs))]))
+
 ;; Matcher → (Option (Setof Value))
 ;; Multiplies out unions. Returns #f if any dimension of m is infinite.
 (define matcher-key-set
@@ -624,7 +647,7 @@
     ;; (Listof Value) Sigma -> Value
     (define (transform-seqs vs opener)
       (cond
-       [(eq? opener SOP) (apply cons vs)]
+       [(eq? opener SOL) (untransform-list-value vs)]
        [(eq? opener SOV) (list->vector vs)]
        [(struct-type? opener) (apply (struct-type-make-constructor opener) vs)]))
 
@@ -684,9 +707,13 @@
   (define SX (set 'X))
   (define (E v) (hash EOS (success v)))
   (check-equal? (pattern->matcher SA 123) (hash 123 (E SA)))
-  (check-equal? (pattern->matcher SA (cons 1 2)) (hash SOP (hash 1 (hash 2 (hash EOS (E SA))))))
-  (check-equal? (pattern->matcher SA (cons ? 2)) (hash SOP (hash ? (hash 2 (hash EOS (E SA))))))
-  (check-equal? (pattern->matcher SA SOP) (hash struct:start-of-pair (hash EOS (E SA))))
+  (check-equal? (pattern->matcher SA (cons 1 2))
+		(hash SOL (hash 1 (hash ILM (hash 2 (hash EOS (E SA)))))))
+  (check-equal? (pattern->matcher SA (cons ? 2))
+		(hash SOL (hash ? (hash ILM (hash 2 (hash EOS (E SA)))))))
+  (check-equal? (pattern->matcher SA (list 1 2)) (hash SOL (hash 1 (hash 2 (hash EOS (E SA))))))
+  (check-equal? (pattern->matcher SA (list ? 2)) (hash SOL (hash ? (hash 2 (hash EOS (E SA))))))
+  (check-equal? (pattern->matcher SA SOL) (hash struct:start-of-list (hash EOS (E SA))))
   (check-equal? (pattern->matcher SA ?) (hash ? (E SA)))
   )
 
@@ -829,10 +856,15 @@
    (list 'Z '((()) - -)) "Z+"
    (list '? (list '- '- '-)) "")
 
-  (check-matches (pretty-print-matcher* (pattern->matcher SA (list* 'a 'b ?)))
-		 (list 'a 'b 'c 'd 'e 'f) "A"
-		 (list 'b 'c 'd 'e 'f 'a) ""
-		 3 "")
+  ;; ;; Having switched from pair-based matching to list-based matching,
+  ;; ;; it's no longer supported to match with a wildcard in the cdr of a
+  ;; ;; pair. Or rather, it is, but it won't work reliably: when the
+  ;; ;; value to be matched is a proper list, it will fail to match.
+  ;; ;; Consequently: Don't Do That.
+  ;; (check-matches (pretty-print-matcher* (pattern->matcher SA (list* 'a 'b ?)))
+  ;; 		 (list 'a 'b 'c 'd 'e 'f) "A"
+  ;; 		 (list 'b 'c 'd 'e 'f 'a) ""
+  ;; 		 3 "")
 
   (void (pretty-print-matcher* (matcher-intersect (pattern->matcher SA (list 'a))
 						  (pattern->matcher SB (list 'b)))))
@@ -952,10 +984,13 @@
   (check-equal? (intersect ? ?) (rwild EAB))
   (check-equal? (intersect 'a ?) (rseq 'a EAB))
   (check-equal? (intersect 123 ?) (rseq 123 EAB))
-  (check-equal? (intersect (cons ? 2) (cons 1 ?)) (rseq* SOP 1 2 EOS EAB))
-  (check-equal? (intersect (cons 1 2) ?) (rseq* SOP 1 2 EOS EAB))
+  (check-equal? (intersect (cons ? 2) (cons 1 ?)) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-equal? (intersect (list ? 2) (list 1 ?)) (rseq* SOL 1 2 EOS EAB))
+  (check-equal? (intersect (cons 1 2) ?) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-equal? (intersect (list 1 2) ?) (rseq* SOL 1 2 EOS EAB))
   (check-equal? (intersect 1 2) #f)
-  (check-equal? (intersect (cons 1 2) (cons ? 2)) (rseq* SOP 1 2 EOS EAB))
+  (check-equal? (intersect (cons 1 2) (cons ? 2)) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-equal? (intersect (list 1 2) (list ? 2)) (rseq* SOL 1 2 EOS EAB))
   (check-equal? (intersect (cons 1 2) (cons 3 2)) #f)
   (check-equal? (intersect (cons 1 2) (cons 1 3)) #f)
   (check-equal? (intersect (vector 1 2) (vector 1 2)) (rseq* SOV 1 2 EOS EAB))
@@ -996,9 +1031,9 @@
     (define m2 (pretty-print-matcher* (pattern->matcher SD ?)))
     (define mi (pretty-print-matcher* (matcher-intersect m1 m2)))
     (check-equal? mi
-		  (H SOP (H 'a (H SOP (H ? (H '() (H EOS (H EOS (E (set 'A 'D)))))))
-			    'b (H SOP (H ? (H '() (H EOS (H EOS (E (set 'B 'D)))))
-					 'c (H '() (H EOS (H EOS (E (set 'B 'C 'D))))))))))
+		  (H SOL (H 'a (H  ? (H EOS (E (set 'A 'D))))
+			    'b (H  ? (H EOS (E (set 'B 'D)))
+				  'c (H EOS (E (set 'B 'C 'D)))))))
     (check-equal? (pretty-print-matcher*
 		   (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
 		     (matcher-intersect m1 m2)))
@@ -1036,10 +1071,14 @@
 		  (list (set) (set)))))
 
 (module+ test
+  (check-equal? (compile-projection (cons 'a 'b))
+		(list SOL 'a ILM 'b EOS EOS))
+  (check-equal? (compile-projection (cons 'a (?!)))
+		(list SOL 'a ILM SOC ? EOC EOS EOS))
   (check-equal? (compile-projection (list 'a 'b))
-		(list SOP 'a SOP 'b '() EOS EOS EOS))
+		(list SOL 'a 'b EOS EOS))
   (check-equal? (compile-projection (list 'a (?!)))
-		(list SOP 'a SOP SOC ? EOC '() EOS EOS EOS))
+		(list SOL 'a SOC ? EOC EOS EOS))
 
   (parameterize ((matcher-project-success (lambda (v) #t)))
     (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
