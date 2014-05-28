@@ -20,6 +20,7 @@
 	 matcher-erase-path
 	 matcher-match-value
 	 matcher-match-matcher
+	 matcher-append
 	 matcher-relabel
 	 compile-projection
 	 projection->pattern
@@ -74,9 +75,11 @@
 (define-singleton-struct ILM improper-list-marker "|")
 (define-singleton-struct EOS end-of-sequence ">")
 
-;; A Pattern is an atom, the special wildcard value, or a Racket
-;; compound (struct, pair, or vector) containing Patterns.
+;; A Pattern is an atom, the special wildcard value, an
+;; embedded-matcher, or a Racket compound (struct, pair, or vector)
+;; containing Patterns.
 (define-singleton-struct ? wildcard "★") ;; alternative printing: ¿
+(struct embedded-matcher (matcher) #:transparent)
 
 ;; When projecting a matcher, the capturing wildcard can be used.
 (struct capture (pattern) #:transparent)
@@ -138,6 +141,7 @@
 					   [(cons p1 p2) (walk p1 (walk-list p2))]
 					   [other (rseq ILM (walk other (rseq EOS acc)))]))))]
       [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
+      [(embedded-matcher m) (matcher-append m (lambda (mv) acc))]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
        (when skipped? (error 'pattern->matcher "Cannot reflect on struct instance ~v" p))
@@ -449,6 +453,18 @@
 	[(r #f) (matcher-match-matcher-unit)]
 	[(r1 r2) (walk r1 r2 (matcher-match-matcher-unit))]))))
 
+;; Matcher × (Value → Matcher) → Matcher
+(define (matcher-append m0 m-tail-fn)
+  (let walk ((m m0))
+    (match m
+      [#f #f]
+      [(success v) (error 'matcher-append "Ill-formed matcher: ~v" m0)]
+      [(wildcard-sequence m1) (rwildseq (walk m1))]
+      [(? hash?) (for/fold [(acc #f)] [((k v) (in-hash m))]
+		   (if (and (key-close? k) (success? v))
+		       (matcher-union acc (m-tail-fn (success-value v)))
+		       (rupdate acc k (walk v))))])))
+
 (define (matcher-relabel m f)
   (let walk ((m m))
     (match m
@@ -471,6 +487,7 @@
 					   [(cons p1 p2) (walk p1 (walk-list p2))]
 					   [other (cons ILM (walk other (cons EOS acc)))]))))]
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
+      [(embedded-matcher m) (error 'compile-projection "Cannot embed matcher in projection")]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
        (when skipped? (error 'compile-projection "Cannot reflect on struct instance ~v" p))
@@ -486,6 +503,7 @@
       [(capture sub) (walk sub)] ;; TODO: maybe enforce non-nesting here too?
       [(cons p1 p2) (cons (walk p1) (walk p2))]
       [(? vector? v) (for/vector [(e (in-vector v))] (walk e))]
+      [(embedded-matcher _) p]
       [(? non-object-struct?)
        (define-values (t skipped?) (struct-info p))
        (when skipped? (error 'projection->pattern "Cannot reflect on struct instance ~v" p))
@@ -1294,3 +1312,17 @@
 			(4 (((")") (((")") ("" ("B"))))))))))))))
     (check-equal? (matcher->jsexpr M (lambda (v) (map symbol->string (set->list v)))) S)
     (check-equal? (jsexpr->matcher S (lambda (v) (list->set (map string->symbol v)))) M)))
+
+(module+ test
+  (check-equal? (pretty-print-matcher*
+		 (pattern->matcher SA (list 1
+					    (embedded-matcher
+					     (pattern->matcher SB (list 2 3)))
+					    4)))
+		(pattern->matcher SA (list 1 (list 2 3) 4)))
+
+  (check-equal? (pretty-print-matcher*
+		 (pattern->matcher SA
+				   (list (embedded-matcher (pattern->matcher SB (list 1 2)))
+					 (embedded-matcher (pattern->matcher SC (list 3 4))))))
+		(pattern->matcher SA (list (list 1 2) (list 3 4)))))
