@@ -25,6 +25,7 @@
 
 	 sub
 	 pub
+	 gestalt-accepts?
 
 	 spawn
 	 send
@@ -72,6 +73,10 @@
 
 (define (sub p #:meta-level [ml 0] #:level [l 0]) (simple-gestalt #f p l ml))
 (define (pub p #:meta-level [ml 0] #:level [l 0]) (simple-gestalt #t p l ml))
+
+(define (gestalt-accepts? g m)
+  (match-define (message b ml f?) m)
+  (not (set-empty? (gestalt-match-value g b ml f?))))
 
 (define (spawn behavior state [gestalt (gestalt-empty)]) (process gestalt behavior state))
 (define (send body #:meta-level [ml 0]) (message body ml #f))
