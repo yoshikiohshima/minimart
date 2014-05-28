@@ -26,6 +26,8 @@
 	 matcher-project
 	 matcher-key-set
 	 pretty-print-matcher
+	 matcher->jsexpr
+	 jsexpr->matcher
 
 	 matcher-union-successes
 	 matcher-intersect-successes
@@ -657,6 +659,10 @@
     (lambda (m)
       (walk m (lambda (v k) (set v))))))
 
+(define (struct-type-name st)
+  (define-values (name x2 x3 x4 x5 x6 x7 x8) (struct-type-info st))
+  name)
+
 (define (pretty-print-matcher m [port (current-output-port)] #:indent [initial-indent 0])
   (define (d x) (display x port))
   (define (walk i m)
@@ -681,10 +687,8 @@
 	     (define keystr (call-with-output-string
 			     (lambda (p)
 			       (if (struct-type? key)
-				   (let-values (((name x2 x3 x4 x5 x6 x7 x8)
-						 (struct-type-info key)))
-				     (display "<s:" p)
-				     (display name p))
+				   (begin (display "<s:" p)
+					  (display (struct-type-name key) p))
 				   (display key p)))))
 	     (d keystr)
 	     (walk (+ i 1 (string-length keystr)) k)
@@ -692,6 +696,53 @@
   (walk initial-indent m)
   (newline port)
   m)
+
+(define (matcher->jsexpr m success->jsexpr)
+  (let walk ((m m))
+    (match m
+      [#f '()]
+      [(success v) (list "" (success->jsexpr v))]
+      [(wildcard-sequence m1) (list "...)" (walk m1))]
+      [(? hash?) (for/list [((k v) (in-hash m))]
+		   (list (match k
+			   [(== ?) (list "__")]
+			   [(== SOL) (list "(")]
+			   [(== SOV) (list "#(")]
+			   [(== EOS) (list ")")]
+			   [(? struct-type? t)
+			    (list (string-append (symbol->string (struct-type-name t)) "("))]
+			   [else k])
+			 (walk v)))])))
+
+(define (deserialize-struct-type-name stn)
+  (define expected-paren-pos (- (string-length stn) 1))
+  (and (char=? (string-ref stn expected-paren-pos) #\()
+       (substring stn 0 expected-paren-pos)))
+
+(define (jsexpr->matcher j jsexpr->success [struct-type-name->struct-type (lambda () #f)])
+  (let walk ((j j))
+    (match j
+      ['() #f]
+      [(list "" vj) (rsuccess (jsexpr->success vj))]
+      [(list "...)" j1) (rwildseq (walk j1))]
+      [(list (list kjs vjs) ...) (for/hash [(kj kjs) (vj vjs)]
+				   (values (match kj
+					     [(list "__") ?]
+					     [(list "(") SOL]
+					     [(list "#(") SOV]
+					     [(list ")") EOS]
+					     [(list (? string? s))
+					      (match (deserialize-struct-type-name s)
+						[#f (error 'jsexpr->matcher
+							   "Illegal open-parenthesis mark ~v"
+							   kj)]
+						[tn (match (struct-type-name->struct-type tn)
+						      [#f (error 'jsexpr->matcher
+								 "Unexpected struct type ~v"
+								 tn)]
+						      [t t])])]
+					     [other other])
+					   (walk vj)))])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -1226,3 +1277,20 @@
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
     (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) A))
 		  B)))
+
+(module+ test
+  (let ((M (foldr matcher-union (matcher-empty)
+		  (list (pattern->matcher SA (list ? 2))
+			(pattern->matcher SC (list 1 3))
+			(pattern->matcher SD (list ? 3))
+			(pattern->matcher SB (list 3 4)))))
+	(S '((("(")
+	      ((("__") ((2 (((")") (((")") ("" ("A")))))))
+			(3 (((")") (((")") ("" ("D")))))))))
+	       (1      ((2 (((")") (((")") ("" ("A")))))))
+			(3 (((")") (((")") ("" ("D" "C")))))))))
+	       (3      ((2 (((")") (((")") ("" ("A")))))))
+			(3 (((")") (((")") ("" ("D")))))))
+			(4 (((")") (((")") ("" ("B"))))))))))))))
+    (check-equal? (matcher->jsexpr M (lambda (v) (map symbol->string (set->list v)))) S)
+    (check-equal? (jsexpr->matcher S (lambda (v) (list->set (map string->symbol v)))) M)))
