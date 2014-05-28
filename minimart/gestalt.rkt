@@ -21,7 +21,9 @@
 	 gestalt-erase-path
 	 strip-gestalt-label
 	 label-gestalt
-	 pretty-print-gestalt)
+	 pretty-print-gestalt
+	 gestalt->jsexpr
+	 jsexpr->gestalt)
 
 ;; A Gestalt is a (gestalt (Listof (Listof (Pairof Matcher Matcher)))),
 ;; representing the total interests of a process or group of
@@ -255,6 +257,22 @@
 	    (when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
 	    (when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9)))))))
 
+(define (gestalt->jsexpr g success->jsexpr)
+  (list "gestalt" (for/list [(ls (in-list (gestalt-metalevels g)))]
+		    (for/list [(l (in-list ls))]
+		      (match-define (cons subs advs) l)
+		      (list (matcher->jsexpr subs success->jsexpr)
+			    (matcher->jsexpr advs success->jsexpr))))))
+
+(define (jsexpr->gestalt j jsexpr->success)
+  (match j
+    [(list "gestalt" mlsj)
+     (gestalt (for/list [(lsj (in-list mlsj))]
+		(for/list [(lj (in-list lsj))]
+		  (match-define (list sj aj) lj)
+		  (cons (jsexpr->matcher sj jsexpr->success)
+			(jsexpr->matcher aj jsexpr->success)))))]))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (module+ test
@@ -282,4 +300,10 @@
 		(gestalt (list empty-metalevel empty-metalevel
 			       (list empty-level empty-level
 				     (cons (pattern->matcher #t 'a)
-					   (pattern->matcher #t 'b)))))))
+					   (pattern->matcher #t 'b))))))
+
+  (require json)
+  (let ((J (string->jsexpr "[\"gestalt\",[[[[[\"A\",[[[\")\"],[\"\",true]]]]],[]]],[],[[[],[]],[[],[]],[[],[[\"B\",[[[\")\"],[\"\",true]]]]]]]]]"))
+	(G (gestalt-union (simple-gestalt #f "A" 0 0) (simple-gestalt #t "B" 2 2))))
+    (check-equal? (jsexpr->gestalt J (lambda (v) v)) G)
+    (check-equal? (gestalt->jsexpr G (lambda (v) v)) J)))
