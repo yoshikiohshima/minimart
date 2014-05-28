@@ -100,8 +100,9 @@
 
 (define (transition-bind k t0)
   (match-define (transition state0 actions0) t0)
-  (match-define (transition state1 actions1) (k state0))
-  (transition state1 (cons actions0 actions1)))
+  (match (k state0)
+    [(transition state1 actions1) (transition state1 (cons actions0 actions1))]
+    [#f t0]))
 
 (define (sequence-transitions t0 . steps)
   (foldl transition-bind t0 steps))
