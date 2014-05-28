@@ -197,7 +197,7 @@
 	[('() _) acc]
 	[(_ '()) acc]
 	[((cons ls1 mrest1) (cons ls2-unshifted mrest2))
-	 (match-levels ls1 (cdr ls2-unshifted) (match-metalevels mrest1 mrest2 acc))]))
+	 (match-levels ls1 (safe-cdr ls2-unshifted) (match-metalevels mrest1 mrest2 acc))]))
 
     (define (match-levels ls1 ls2 acc)
       (match ls1
