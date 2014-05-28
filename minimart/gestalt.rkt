@@ -19,6 +19,7 @@
 	 gestalt-filter
 	 gestalt-match
 	 gestalt-erase-path
+	 gestalt-transform
 	 strip-gestalt-label
 	 label-gestalt
 	 pretty-print-gestalt
@@ -70,9 +71,6 @@
   (if (and (null? d) (equal? a unit))
       '()
       (cons a d)))
-
-(define (guarded-map gcons f xs)
-  (foldr (lambda (e acc) (gcons (f e) acc)) '() xs))
 
 (define empty-level '(#f . #f))
 (define empty-metalevel '())
@@ -233,11 +231,18 @@
     [(left-longer) x]
     [(right-longer) '()]))
 
+(define (gestalt-transform g f)
+  (gestalt (let loop-outer ((mls (gestalt-metalevels g)) (i 0))
+	     (cond [(null? mls) '()]
+		   [else (cons-metalevel
+			  (let loop-inner ((ls (car mls)) (j 0))
+			    (cond [(null? ls) '()]
+				  [else (cons-level (f i j (car ls))
+						    (loop-inner (cdr ls) (+ j 1)))]))
+			  (loop-outer (cdr mls) (+ i 1)))]))))
+
 (define (gestalt-matcher-transform g f)
-  (gestalt (guarded-map cons-metalevel
-			(lambda (ls)
-			  (guarded-map cons-level (lambda (p) (cons (f (car p)) (f (cdr p)))) ls))
-			(gestalt-metalevels g))))
+  (gestalt-transform g (lambda (i j p) (cons (f (car p)) (f (cdr p))))))
 
 (define (strip-gestalt-label g)
   (gestalt-matcher-transform g (lambda (m) (matcher-relabel m (lambda (v) #t)))))
