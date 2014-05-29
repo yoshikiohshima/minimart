@@ -55,8 +55,8 @@
   (define new-d (struct-copy demand-matcher d
 		  [current-demand new-demand]
 		  [current-supply new-supply]))
-  (let* ((s (for/fold [(s s)] [(k (in-set demand+))] (apply inc-h s (vector->list k))))
-	 (s (for/fold [(s s)] [(k (in-set supply-))] (apply dec-h s (vector->list k)))))
+  (let* ((s (for/fold [(s s)] [(captures (in-set demand+))] (apply inc-h s captures)))
+	 (s (for/fold [(s s)] [(captures (in-set supply-))] (apply dec-h s captures))))
     (values new-d s)))
 
 (define (demand-matcher-handle-event e d)

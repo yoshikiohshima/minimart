@@ -24,7 +24,7 @@
   ;; process be identified and terminated?
   (when (not es) (error 'extract-active-events "User program subscribed to wildcard event"))
   (for/list [(ev (in-set es))]
-    (match-define (vector e) ev)
+    (match-define (list e) ev)
     (event-handler e)))
 
 (define idle-handler

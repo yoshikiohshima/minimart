@@ -12,6 +12,7 @@
 	 ?!
 	 (struct-out capture)
 	 pattern->matcher
+	 pattern->matcher*
 	 matcher? ;; expensive; see implementation
 	 matcher-empty
 	 matcher-empty?
@@ -23,6 +24,7 @@
 	 matcher-append
 	 matcher-relabel
 	 compile-projection
+	 compile-projection*
 	 projection->pattern
 	 matcher-project
 	 matcher-key-set
@@ -131,15 +133,17 @@
   (for/fold [(acc knil)] [(elem (in-vector v (- (vector-length v) 1) -1 -1))]
     (kons elem acc)))
 
-(define (pattern->matcher v p)
-  (let walk ((p p) (acc (rseq EOS (rsuccess v))))
+(define (pattern->matcher* v ps)
+  (define (walk-list ps acc)
+    (match ps
+      ['() (rseq EOS acc)]
+      [(cons p ps) (walk p (walk-list ps acc))]
+      [other (rseq ILM (walk other (rseq EOS acc)))]))
+
+  (define (walk p acc)
     (match p
       [(== ?) (rwild acc)]
-      [(cons p1 p2) (rseq SOL (walk p1 (let walk-list ((p p2))
-					 (match p
-					   ['() (rseq EOS acc)]
-					   [(cons p1 p2) (walk p1 (walk-list p2))]
-					   [other (rseq ILM (walk other (rseq EOS acc)))]))))]
+      [(cons p1 p2) (rseq SOL (walk p1 (walk-list p2 acc)))]
       [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
       [(embedded-matcher m) (matcher-append m (lambda (mv) acc))]
       [(? non-object-struct?)
@@ -149,7 +153,12 @@
        (rseq t (foldr walk (rseq EOS acc) fs))]
       ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
       [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
-      [other (rseq other acc)])))
+      [other (rseq other acc)]))
+
+  (walk-list ps (rsuccess v)))
+
+(define (pattern->matcher v . ps)
+  (pattern->matcher* v ps))
 
 (define (rlookup r key)
   (hash-ref r key (lambda () #f)))
@@ -473,19 +482,18 @@
       [(wildcard-sequence m1) (rwildseq (walk m1))]
       [(? hash?) (for/fold [(acc #f)] [((k v) (in-hash m))] (rupdate acc k (walk v)))])))
 
-(define (compile-projection p)
-  ;; Extremely similar to pattern->matcher. Besides use of conses
-  ;; rather than chained hashtables, the only interesting difference
-  ;; is how ?! is treated.
-  (let walk ((p p) (acc (cons EOS '())))
+(define (compile-projection* ps)
+  (define (walk-list ps acc)
+    (match ps
+      ['() (cons EOS acc)]
+      [(cons p ps) (walk p (walk-list ps acc))]
+      [other (cons ILM (walk other (cons EOS acc)))]))
+
+  (define (walk p acc)
     (match p
       [(capture sub) (cons SOC (walk sub (cons EOC acc)))] ;; TODO: enforce non-nesting here
       [(== ?) (cons ? acc)]
-      [(cons p1 p2) (cons SOL (walk p1 (let walk-list ((p p2))
-					 (match p
-					   ['() (cons EOS acc)]
-					   [(cons p1 p2) (walk p1 (walk-list p2))]
-					   [other (cons ILM (walk other (cons EOS acc)))]))))]
+      [(cons p1 p2) (cons SOL (walk p1 (walk-list p2 acc)))]
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
       [(embedded-matcher m) (error 'compile-projection "Cannot embed matcher in projection")]
       [(? non-object-struct?)
@@ -495,7 +503,12 @@
        (cons t (foldr walk (cons EOS acc) fs))]
       ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
       [(? hash?) (error 'compile-projection "Cannot match on hash tables at present")]
-      [other (cons other acc)])))
+      [other (cons other acc)]))
+
+  (walk-list ps '()))
+
+(define (compile-projection . ps)
+  (compile-projection* ps))
 
 (define (projection->pattern p)
   (let walk ((p p))
@@ -553,7 +566,7 @@
 	['()
 	 (when capturing? (error 'matcher-project "Bad specification: unclosed capture"))
 	 (match m
-	   [(success v) (rseq EOS (rseq EOS (rsuccess ((matcher-project-success) v))))]
+	   [(success v) (rseq EOS (rsuccess ((matcher-project-success) v)))]
 	   [_ (matcher-empty)])]
 
 	[(cons (== EOC) k)
@@ -609,7 +622,7 @@
 	    [_ (matcher-empty)]))]))
 
     (lambda (m spec)
-      (rseq SOV (walk #f m spec)))))
+      (walk #f m spec))))
 
 (define (untransform-list-value vs)
   (match vs
@@ -618,7 +631,7 @@
     [(cons (== ILM) _) (error 'untransform-list-value "Illegal use of ILM" vs)]
     [(cons v vs) (cons v (untransform-list-value vs))]))
 
-;; Matcher → (Option (Setof Value))
+;; Matcher → (Option (Setof (Listof Value)))
 ;; Multiplies out unions. Returns #f if any dimension of m is infinite.
 (define matcher-key-set
   (let ()
@@ -662,7 +675,7 @@
 							       (k (for/set [(vs (in-set vss))]
 								    (cons v vs))
 								  vsk)))))]))))]
-	[_ (k (set) #f)])) ;; TODO: ??
+	[_ (k (set) #f)]))
 
     ;; (Listof Value) Sigma -> Value
     (define (transform-seqs vs opener)
@@ -675,7 +688,7 @@
     (define (maybe-union s1 s2) (and s1 s2 (set-union s1 s2)))
 
     (lambda (m)
-      (walk m (lambda (v k) (set v))))))
+      (walk-seq m (lambda (vss vsk) vss)))))
 
 (define (struct-type-name st)
   (define-values (name x2 x3 x4 x5 x6 x7 x8) (struct-type-info st))
@@ -1153,32 +1166,32 @@
     (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						  (pattern->matcher SB (list 'a 'b)))
 				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t (vector 'a))
-				 (pattern->matcher #t (vector 'b))))
+		  (matcher-union (pattern->matcher #t 'a)
+				 (pattern->matcher #t 'b)))
 
     (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						  (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
 				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t (vector 'a))
-				 (pattern->matcher #t (vector (vector 'b 'c 'd)))))
+		  (matcher-union (pattern->matcher #t 'a)
+				 (pattern->matcher #t (vector 'b 'c 'd))))
 
     (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						  (pattern->matcher SB (list 'a (vector 'b ? 'd))))
 				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t (vector 'a))
-				 (pattern->matcher #t (vector (vector 'b ? 'd)))))
+		  (matcher-union (pattern->matcher #t 'a)
+				 (pattern->matcher #t (vector 'b ? 'd))))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						   (pattern->matcher SB (list 'a 'b)))
 				    (compile-projection (list 'a (?!)))))
-		  (set '#(a) '#(b)))
+		  (set '(a) '(b)))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						   (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
 				    (compile-projection (list 'a (?!)))))
-		  (set '#(a) '#(#(b c d))))
+		  (set '(a) '(#(b c d))))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
@@ -1190,13 +1203,13 @@
 		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
 						   (pattern->matcher SB (list 'a (vector 'b ? 'd))))
 				    (compile-projection (list 'a (?! 'a)))))
-		  (set '#(a)))
+		  (set '(a)))
 
     (check-equal? (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
 						  (pattern->matcher SB (cons 3 4)))
 				   (compile-projection (cons (?!) (?!))))
-		  (matcher-union (pattern->matcher #t (vector 1 2))
-				 (pattern->matcher #t (vector 3 4))))
+		  (matcher-union (pattern->matcher #t 1 2)
+				 (pattern->matcher #t 3 4)))
 
     (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
 					  (list (pattern->matcher SA (cons 1 2))
@@ -1204,9 +1217,9 @@
 						(pattern->matcher SC (cons 3 4))))
 				   (compile-projection (cons (?!) (?!))))
 		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (vector 1 2))
-			       (pattern->matcher #t (vector 1 4))
-			       (pattern->matcher #t (vector 3 4)))))
+			 (list (pattern->matcher #t 1 2)
+			       (pattern->matcher #t 1 4)
+			       (pattern->matcher #t 3 4))))
 
     (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
 					  (list (pattern->matcher SA (cons 1 2))
@@ -1214,9 +1227,9 @@
 						(pattern->matcher SC (cons 3 4))))
 				   (compile-projection (?! (cons ? ?))))
 		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (vector (cons 1 2)))
-			       (pattern->matcher #t (vector (cons 1 4)))
-			       (pattern->matcher #t (vector (cons 3 4))))))
+			 (list (pattern->matcher #t (cons 1 2))
+			       (pattern->matcher #t (cons 1 4))
+			       (pattern->matcher #t (cons 3 4)))))
 
     (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
 					  (list (pattern->matcher SA (cons 1 2))
@@ -1224,8 +1237,8 @@
 						(pattern->matcher SC (cons 3 4))))
 				   (compile-projection (?! (cons 1 ?))))
 		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (vector (cons 1 2)))
-			       (pattern->matcher #t (vector (cons 1 4))))))
+			 (list (pattern->matcher #t (cons 1 2))
+			       (pattern->matcher #t (cons 1 4)))))
 
     (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
 					  (list (pattern->matcher SA (cons 1 2))
@@ -1233,8 +1246,8 @@
 						(pattern->matcher SC (cons 3 4))))
 				   (compile-projection (cons (?! 1) (?!))))
 		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (vector 1 2))
-			       (pattern->matcher #t (vector 1 4)))))
+			 (list (pattern->matcher #t 1 2)
+			       (pattern->matcher #t 1 4))))
 
     (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
 					  (list (pattern->matcher SA (cons 1 2))
@@ -1242,8 +1255,8 @@
 						(pattern->matcher SC (cons 3 4))))
 				   (compile-projection (cons (?!) (?! 4))))
 		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (vector 1 4))
-			       (pattern->matcher #t (vector 3 4)))))
+			 (list (pattern->matcher #t 1 4)
+			       (pattern->matcher #t 3 4))))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (foldr matcher-union (matcher-empty)
@@ -1259,18 +1272,18 @@
 						 (pattern->matcher SC (cons 1 3))
 						 (pattern->matcher SB (cons 3 4))))
 				    (compile-projection (cons ? (?!)))))
-		  (set '#(2) '#(3) '#(4)))
+		  (set '(2) '(3) '(4)))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
 						   (pattern->matcher SB (cons 3 4)))
 				    (compile-projection (cons (?!) (?!)))))
-		  (set '#(1 2) '#(3 4))))
+		  (set '(1 2) '(3 4))))
 
   (check-equal? (matcher-project (matcher-union (pattern->matcher SA ?)
 						 (pattern->matcher SB (list 'a)))
 				 (compile-projection (?! (list (list ?)))))
-		(pattern->matcher SA (vector (list (list ?)))))
+		(pattern->matcher SA (list (list ?))))
 
   (check-equal? (projection->pattern (list 'a 'b)) (list 'a 'b))
   (check-equal? (projection->pattern (list 'a ?)) (list 'a ?))

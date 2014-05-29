@@ -9,6 +9,7 @@
 (provide (struct-out gestalt)
 	 gestalt-match-value
 	 compile-gestalt-projection
+	 compile-gestalt-projection*
 	 gestalt-project
 	 drop-gestalt
 	 lift-gestalt
@@ -85,8 +86,11 @@
     (define matcher ((if is-feedback? cdr car) level)) ;; feedback targets advertisers/publishers
     (set-union (matcher-match-value matcher body) acc)))
 
-(define (compile-gestalt-projection spec)
-  (compile-projection spec))
+(define (compile-gestalt-projection* specs)
+  (compile-projection* specs))
+
+(define (compile-gestalt-projection . specs)
+  (compile-gestalt-projection* specs))
 
 ;; Gestalt × Natural × Natural × Boolean × CompiledSpec → Matcher
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
