@@ -28,6 +28,7 @@
 	 projection->pattern
 	 matcher-project
 	 matcher-key-set
+	 matcher-key-set/single
 	 pretty-print-matcher
 	 matcher->jsexpr
 	 jsexpr->matcher
@@ -689,6 +690,12 @@
 
     (lambda (m)
       (walk-seq m (lambda (vss vsk) vss)))))
+
+;; Matcher → (Option (Setof Value))
+;; As matcher-key-set, but extracts just the first captured subvalue.
+(define (matcher-key-set/single m)
+  (define vss (matcher-key-set m))
+  (and vss (for/set [(vs (in-set vss))] (car vs))))
 
 (define (struct-type-name st)
   (define-values (name x2 x3 x4 x5 x6 x7 x8) (struct-type-info st))
