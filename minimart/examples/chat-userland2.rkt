@@ -20,8 +20,9 @@
   (userland-thread #:gestalt tcp-gestalt
 
    (wait-for-gestalt tcp-gestalt)
-   (send-to-remote "Welcome. What is your name? > ")
+   (send-to-remote "What is your name? > ")
    (define user (read-chunk))
+   (send-to-remote "Welcome, ~a.\n" user)
 
    (do (routing-update (gestalt-union tcp-gestalt
 				      (sub `(,? says ,?) #:level 1)
@@ -41,10 +42,9 @@
 	(say who "says: ~a" what)
 	(loop old-peers)]
        [(routing-update g)
-	(define remote-present? (not (gestalt-empty? (gestalt-filter g tcp-gestalt))))
+	(when (gestalt-empty? (gestalt-filter g tcp-gestalt)) (do (quit)))
 	(define new-peers (matcher-key-set/single
 			   (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
-	(when (not remote-present?) (do (quit)))
 	(for/list [(who (set-subtract new-peers old-peers))] (say who "arrived."))
 	(for/list [(who (set-subtract old-peers new-peers))] (say who "departed."))
 	(loop new-peers)]))))

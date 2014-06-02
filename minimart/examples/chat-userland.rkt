@@ -15,15 +15,15 @@
   (define (say who fmt . vs)
     (unless (equal? who user) (send-to-remote "~a ~a\n" who (apply format fmt vs))))
 
-  (define remote-detector (pub #:meta-level 1 #:level 1 (tcp-channel us them ?)))
+  (define tcp-gestalt (gestalt-union (pub (tcp-channel us them ?) #:meta-level 1 #:level 1)
+				     (pub (tcp-channel us them ?) #:meta-level 1)
+				     (sub (tcp-channel them us ?) #:meta-level 1)))
 
-  (userland-thread #:gestalt (gestalt-union (sub `(,? says ,?))
+  (userland-thread #:gestalt (gestalt-union tcp-gestalt
+					    (sub `(,? says ,?))
 					    (sub `(,? says ,?) #:level 1)
-					    (pub `(,user says ,?))
-					    (sub (tcp-channel them us ?) #:meta-level 1)
-					    (pub (tcp-channel us them ?) #:meta-level 1)
-					    remote-detector)
-   (wait-for-gestalt remote-detector)
+					    (pub `(,user says ,?)))
+   (wait-for-gestalt tcp-gestalt)
    (send-to-remote "Welcome, ~a.\n" user)
    (let loop ((old-peers (set)))
      (match (next-event)
@@ -34,10 +34,9 @@
 	(say who "says: ~a" what)
 	(loop old-peers)]
        [(routing-update g)
-	(define remote-present? (not (gestalt-empty? (gestalt-filter g remote-detector))))
+	(when (gestalt-empty? (gestalt-filter g tcp-gestalt)) (do (quit)))
 	(define new-peers (matcher-key-set/single
 			   (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
-	(when (not remote-present?) (do (quit)))
 	(for/list [(who (set-subtract new-peers old-peers))] (say who "arrived."))
 	(for/list [(who (set-subtract old-peers new-peers))] (say who "departed."))
 	(loop new-peers)]))))
