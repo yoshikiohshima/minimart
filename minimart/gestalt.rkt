@@ -92,12 +92,16 @@
 (define (compile-gestalt-projection . specs)
   (compile-gestalt-projection* specs))
 
+(define capture-everything-projection (compile-gestalt-projection (?!)))
+
 ;; Gestalt × Natural × Natural × Boolean × CompiledSpec → Matcher
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
   (define levels (safe-list-ref (gestalt-metalevels g) metalevel (lambda () empty-metalevel)))
   (define matcher ((if get-advertisements? cdr car)
 		   (safe-list-ref levels level (lambda () empty-level))))
-  (matcher-project matcher capture-spec))
+  (if (equal? capture-spec capture-everything-projection)
+      matcher
+      (matcher-project matcher capture-spec)))
 
 (define (drop-gestalt g)
   (gestalt (safe-cdr (gestalt-metalevels g))))
