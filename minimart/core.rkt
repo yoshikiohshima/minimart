@@ -23,6 +23,7 @@
 	 matcher-key-set
 	 matcher-key-set/single
 	 projection->pattern
+	 matcher-empty?
 
 	 sub
 	 pub
