@@ -16,6 +16,7 @@
 	    (transition seen-remote? (send (tcp-channel local-handle remote-handle line)))]
 	   [(message (tcp-channel _ _ bs) 0 #f)
 	    (write-bytes bs)
+	    (flush-output)
 	    #f]
 	   [(routing-update g)
 	    (define remote-present? (not (gestalt-empty? g)))
