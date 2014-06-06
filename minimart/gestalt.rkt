@@ -3,6 +3,7 @@
 
 (require racket/set)
 (require racket/match)
+(require (only-in racket/port with-output-to-string))
 
 (require "route.rkt")
 
@@ -24,6 +25,7 @@
 	 strip-gestalt-label
 	 label-gestalt
 	 pretty-print-gestalt
+	 gestalt->pretty-string
 	 gestalt->jsexpr
 	 jsexpr->gestalt)
 
@@ -269,6 +271,9 @@
 	    (fprintf port "GESTALT metalevel ~v level ~v:\n" metalevel level)
 	    (when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
 	    (when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9)))))))
+
+(define (gestalt->pretty-string g)
+  (with-output-to-string (lambda () (pretty-print-gestalt g))))
 
 (define (gestalt->jsexpr g [success->jsexpr (lambda (v) #t)])
   (list "gestalt" (for/list [(ls (in-list (gestalt-metalevels g)))]
