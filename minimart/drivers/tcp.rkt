@@ -52,7 +52,8 @@
 		(transition (struct-copy listener-state state [listener #f]) (quit)))
 	 #f)]
     [(message (event _ (list (list cin cout))) 1 #f)
-     (define-values (local-hostname local-port remote-hostname remote-port) (tcp:tcp-addresses cin #t))
+     (define-values (local-hostname local-port remote-hostname remote-port)
+       (tcp:tcp-addresses cin #t))
      (transition state
 		 (spawn-connection (listener-state-server-addr state)
 				   (tcp-address remote-hostname remote-port)
