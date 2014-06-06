@@ -179,7 +179,7 @@
   (parameterize ((pid-stack (cons pid (pid-stack))))
     (when (and (log-events-and-actions?) e)
       (log-info "~a: ~v --> ~v ~v"
-		(reverse (pid-stack))
+		(pid-stack)
 		e
 		(process-behavior p)
 		(if (world? (process-state p))
@@ -187,7 +187,9 @@
 		    (process-state p))))
     (with-handlers ([(lambda (exn) #t)
 		     (lambda (exn)
-		       (log-error "Process ~a died with exception:\n~a" pid (exn->string exn))
+		       (log-error "Process ~a died with exception:\n~a"
+				  (pid-stack)
+				  (exn->string exn))
 		       (transition (process-state p) (list (quit))))])
       (match (with-continuation-mark 'minimart-process
 				     pid ;; TODO: debug-name, other user annotation
@@ -195,7 +197,7 @@
 	[#f #f] ;; inert.
 	[(? transition? t) t] ;; potentially runnable.
 	[x
-	 (log-error "Process ~a returned non-#f, non-transition: ~v" pid x)
+	 (log-error "Process ~a returned non-#f, non-transition: ~v" (pid-stack) x)
 	 (transition (process-state p) (list (quit)))]))))
 
 (define (mark-pid-runnable w pid)
@@ -210,7 +212,7 @@
 				    (when (and (log-events-and-actions?)
 					       (not (null? (flatten new-actions))))
 				      (log-info "~a: ~v <-- ~v ~v"
-						(reverse (cons pid (pid-stack)))
+						(cons pid (pid-stack))
 						new-actions
 						(process-behavior p)
 						(if (world? new-state)
@@ -271,7 +273,10 @@
 	    (w (struct-copy world w
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
-       (log-info "Spawned process ~a ~v ~v" new-pid (process-behavior new-p) (process-state new-p))
+       (log-info "Spawned process ~a ~v ~v"
+		 (cons new-pid (pid-stack))
+		 (process-behavior new-p)
+		 (process-state new-p))
        (apply-and-issue-routing-update w (gestalt-empty) new-gestalt new-pid))]
     [(quit)
      (define pt (world-process-table w))
@@ -279,7 +284,7 @@
      (if p
 	 (let* ((w (struct-copy world w [process-table (hash-remove pt pid)])))
 	   (log-info "Process ~a terminating; ~a processes remain"
-		     pid
+		     (cons pid (pid-stack))
 		     (hash-count (world-process-table w)))
 	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) pid))
 	 (transition w '()))]
