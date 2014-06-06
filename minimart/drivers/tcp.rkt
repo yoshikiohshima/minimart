@@ -3,6 +3,7 @@
 (require racket/match)
 (require (prefix-in tcp: racket/tcp))
 (require (only-in racket/port read-bytes-avail!-evt))
+(require (only-in web-server/private/util exn->string))
 (require "../main.rkt")
 (require "../demand-matcher.rkt")
 
@@ -72,7 +73,18 @@
 
 (define (spawn-tcp-connection local-addr remote-addr)
   (match-define (tcp-address remote-hostname remote-port) remote-addr)
-  (define-values (cin cout) (tcp:tcp-connect remote-hostname remote-port))
+  (define-values (cin cout)
+    (with-handlers ([exn:fail:network? (lambda (e)
+					 ;; TODO: it'd be nice to
+					 ;; somehow communicate the
+					 ;; actual error to the local
+					 ;; peer.
+					 (log-error "~a" (exn->string e))
+					 (define o (open-output-string))
+					 (close-output-port o)
+					 (values (open-input-string "")
+						 o))])
+      (tcp:tcp-connect remote-hostname remote-port)))
   (spawn-connection local-addr remote-addr cin cout))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
