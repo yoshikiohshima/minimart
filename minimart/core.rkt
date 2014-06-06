@@ -286,7 +286,7 @@
 	   (log-info "Process ~a terminating; ~a processes remain"
 		     (cons pid (pid-stack))
 		     (hash-count (world-process-table w)))
-	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) pid))
+	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) #f))
 	 (transition w '()))]
     [(routing-update gestalt)
      (define pt (world-process-table w))
@@ -313,7 +313,8 @@
     [(pending-routing-update g affected-subgestalt known-target)
      (define affected-pids (gestalt-match affected-subgestalt g))
      (define pt (world-process-table w))
-     (for/fold ([w w]) [(pid (in-set (set-add affected-pids known-target)))]
+     (for/fold ([w w])
+	 [(pid (in-set (if known-target (set-add affected-pids known-target) affected-pids)))]
        (match (hash-ref pt pid (lambda () #f))
 	 [#f w]
 	 [p (define g1 (gestalt-filter g (process-gestalt p)))
