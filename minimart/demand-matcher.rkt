@@ -69,7 +69,7 @@
 (define (spawn-demand-matcher projection
 			      increase-handler
 			      [decrease-handler unexpected-supply-decrease]
-			      #:demand-is-subscription? [demand-is-subscription? #t]
+			      #:demand-is-subscription? [demand-is-subscription? #f]
 			      #:meta-level [meta-level 0]
 			      #:demand-level [demand-level 0]
 			      #:supply-level [supply-level 0])

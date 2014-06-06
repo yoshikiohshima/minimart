@@ -10,8 +10,8 @@
   (define (send-to-remote fmt . vs)
     (do (send #:meta-level 1 (tcp-channel us them (string->bytes/utf-8 (apply format fmt vs))))))
 
-  (define tcp-gestalt (gestalt-union (pub (tcp-channel us them ?) #:meta-level 1 #:level 1)
-				     (pub (tcp-channel us them ?) #:meta-level 1)
+  (define tcp-gestalt (gestalt-union (pub (tcp-channel us them ?) #:meta-level 1)
+				     (sub (tcp-channel them us ?) #:meta-level 1 #:level 1)
 				     (sub (tcp-channel them us ?) #:meta-level 1)))
 
   (define (decode-input bs) (string-trim (bytes->string/utf-8 bs)))
@@ -43,8 +43,9 @@
 	(loop old-peers)]
        [(routing-update g)
 	(when (gestalt-empty? (gestalt-filter g tcp-gestalt)) (do (quit)))
-	(define new-peers (matcher-key-set/single
-			   (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
+	(define new-peers
+	  (matcher-key-set/single
+	   (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
 	(for/list [(who (set-subtract new-peers old-peers))] (say who "arrived."))
 	(for/list [(who (set-subtract old-peers new-peers))] (say who "departed."))
 	(loop new-peers)]))))
@@ -53,5 +54,4 @@
 (spawn-world
  (spawn-demand-matcher (tcp-channel (?! (tcp-address ? ?)) (?! (tcp-listener 5999)) ?)
 		       #:meta-level 1
-		       #:demand-is-subscription? #f
 		       spawn-session))

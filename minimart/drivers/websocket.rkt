@@ -30,6 +30,7 @@
 
 (define (spawn-websocket-driver)
   (spawn-demand-matcher (websocket-message ? (?! (websocket-local-server ? ?)) ?)
+			#:demand-is-subscription? #t
 			#:demand-level 1
 			#:supply-level 2
 			spawn-websocket-listener))

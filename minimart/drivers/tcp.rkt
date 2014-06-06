@@ -31,11 +31,11 @@
 
 (define (spawn-tcp-driver)
   (list (spawn-demand-matcher (tcp-channel ? (?! (tcp-listener ?)) ?)
+			      #:demand-is-subscription? #t
 			      #:demand-level 1
 			      #:supply-level 2
 			      spawn-tcp-listener)
 	(spawn-demand-matcher (tcp-channel (?! (tcp-handle ?)) (?! (tcp-address ? ?)) ?)
-			      #:demand-is-subscription? #f
 			      spawn-tcp-connection)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

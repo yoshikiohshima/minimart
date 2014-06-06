@@ -26,5 +26,5 @@
        #f
        (gestalt-union (sub (event (read-bytes-line-evt (current-input-port) 'any) ?) #:meta-level 1)
 		      (sub (tcp-channel remote-handle local-handle ?))
-		      (pub (tcp-channel local-handle remote-handle ?))
-		      (pub (tcp-channel local-handle remote-handle ?) #:level 1)))
+		      (sub (tcp-channel remote-handle local-handle ?) #:level 1)
+		      (pub (tcp-channel local-handle remote-handle ?))))

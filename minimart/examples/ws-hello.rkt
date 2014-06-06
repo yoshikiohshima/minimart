@@ -25,7 +25,6 @@
 			(pub (websocket-message server-id c ?)))))
 
 (spawn-demand-matcher (websocket-message (?! any-client) server-id ?)
-		      #:demand-is-subscription? #f
 		      spawn-connection-handler
 		      (lambda (c)
 			(log-info "Connection handler ~v decided to exit" c)

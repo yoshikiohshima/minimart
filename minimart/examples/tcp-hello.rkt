@@ -20,11 +20,10 @@
   (spawn connection-handler
 	 0
 	 (gestalt-union (sub (tcp-channel c server-id ?))
-			(pub (tcp-channel server-id c ?))
-			(pub (tcp-channel server-id c ?) #:level 1))))
+			(sub (tcp-channel c server-id ?) #:level 1)
+			(pub (tcp-channel server-id c ?)))))
 
 (spawn-demand-matcher (tcp-channel (?! (tcp-address ? ?)) server-id ?)
-		      #:demand-is-subscription? #f
 		      spawn-connection-handler
 		      (lambda (c)
 			(log-info "Connection handler ~v decided to exit" c)
