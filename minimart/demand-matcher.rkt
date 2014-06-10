@@ -1,4 +1,5 @@
 #lang racket/base
+;; A structure (and process!) for matching supply to demand via Gestalts.
 
 (require racket/set)
 (require racket/match)
@@ -10,31 +11,42 @@
 	 demand-matcher-update
 	 spawn-demand-matcher)
 
-(struct demand-matcher (demand-is-subscription?
-			pattern
-			spec
-			meta-level
-			demand-level
-			supply-level
-			increase-handler
-			decrease-handler
-			current-demand
-			current-supply)
+;; A DemandMatcher keeps track of demand for services based on some
+;; Projection over a Gestalt, as well as a collection of functions
+;; that can be used to increase supply in response to increased
+;; demand, or handle a sudden drop in supply for which demand still
+;; exists.
+(struct demand-matcher (demand-is-subscription?	;; Boolean
+			pattern			;; Pattern
+			spec			;; CompiledProjection
+			meta-level		;; Nat
+			demand-level		;; Nat
+			supply-level		;; Nat
+			increase-handler	;; ChangeHandler
+			decrease-handler	;; ChangeHandler
+			current-demand		;; (Setof (Listof Any))
+			current-supply)		;; (Setof (Listof Any))
 	#:transparent)
 
-(define (unexpected-supply-decrease . removed-captures)
-  '())
+;; A ChangeHandler is a ((Constreeof Action) Any* -> (Constreeof Action)).
+;; It is called with an accumulator of actions so-far-computed as its
+;; first argument, and with a value for each capture in the
+;; DemandMatcher's projection as the remaining arguments.
 
+;; ChangeHandler
+;; Default handler of unexpected supply decrease.
 (define (default-decrease-handler state . removed-captures)
   state)
 
-(define (make-demand-matcher demand-is-subscription?
-			     projection
-			     meta-level
-			     demand-level
-			     supply-level
-			     increase-handler
-			     [decrease-handler default-decrease-handler])
+;; Constructs a DemandMatcher. The projection yields both the Pattern
+;; and CompiledProjection stored in the DemandMatcher.
+(define (make-demand-matcher demand-is-subscription?	;; Boolean
+			     projection			;; Projection
+			     meta-level			;; Nat
+			     demand-level		;; Nat
+			     supply-level		;; Nat
+			     increase-handler		;; ChangeHandler
+			     [decrease-handler default-decrease-handler]) ;; ChangeHandler
   (demand-matcher demand-is-subscription?
 		  (projection->pattern projection)
 		  (compile-gestalt-projection projection)
@@ -46,6 +58,11 @@
 		  (set)
 		  (set)))
 
+;; DemandMatcher (Constreeof Action) Gestalt -> (Values DemandMatcher (Constreeof Actions))
+;; Given a new Gestalt from the environment, projects it into supply and demand sets.
+;; Computes the differences between the new sets and the currently-cached sets, and
+;; calls the ChangeHandlers in response to increased unsatisfied demand and decreased
+;; demanded supply.
 (define (demand-matcher-update d s g)
   (match-define (demand-matcher demand-is-sub? _ spec ml dl sl inc-h dec-h old-demand old-supply) d)
   (define new-demand (matcher-key-set (gestalt-project g ml dl (not demand-is-sub?) spec)))
@@ -59,6 +76,8 @@
 	 (s (for/fold [(s s)] [(captures (in-set supply-))] (apply dec-h s captures))))
     (values new-d s)))
 
+;; Behavior :> (Option Event) DemandMatcher -> Transition
+;; Handles events from the environment. Only cares about routing-updates.
 (define (demand-matcher-handle-event e d)
   (match e
     [(routing-update gestalt)
@@ -66,6 +85,14 @@
      (transition new-d actions)]
     [_ #f]))
 
+;; Any* -> (Constreeof Action)
+;; Default handler of unexpected supply decrease.
+;; Ignores the situation.
+(define (unexpected-supply-decrease . removed-captures)
+  '())
+
+;; Projection (Any* -> (Constreeof Action)) [(Any* -> (Constreeof Action))] -> Action
+;; Spawns a demand matcher actor.
 (define (spawn-demand-matcher projection
 			      increase-handler
 			      [decrease-handler unexpected-supply-decrease]
