@@ -1,4 +1,6 @@
 #lang racket/base
+;; Implements a nested-word-like automaton mapping sets of messages to sets of other values.
+;; A kind of "regular-expression"-keyed multimap.
 
 (require racket/set)
 (require racket/match)
@@ -40,7 +42,10 @@
 	 matcher-match-matcher-unit
 	 matcher-project-success)
 
-;; TODO: perhaps avoid the parameters on the fast-path, if they are causing measurable slowdown.
+;; TODO: perhaps avoid the parameters on the fast-path, if they are
+;; causing measurable slowdown.
+;; TODO: should these even be parameterizable?
+
 (define matcher-union-successes (make-parameter (lambda (v1 v2)
 						  (match* (v1 v2)
 						    [(#t v) v]
@@ -56,6 +61,7 @@
 (define matcher-match-matcher-unit (make-parameter (cons (set) (set))))
 (define matcher-project-success (make-parameter values))
 
+;; Constructs a structure type and a singleton instance of it.
 (define-syntax-rule (define-singleton-struct singleton-name struct-name print-representation)
   (begin
     (struct struct-name ()
@@ -64,41 +70,47 @@
 	    (lambda (v port mode) (display print-representation port)))
     (define singleton-name (struct-name))))
 
-;; Unicode angle brackets: 〈, 〉
-
 ;; A Sigma is, roughly, a token in a value being matched. It is one of:
 ;;  - a struct-type, signifying the start of a struct.
-;;  - start-of-list, signifying the start of a list.
-;;  - start-of-vector, signifying the start of a vector.
-;;  - improper-list-marker, signifying the transition into the cdr position of a pair
-;;  - end-of-sequence, signifying the notional close-paren at the end of a compound.
+;;  - SOL, signifying the start of a list.
+;;  - SOV, signifying the start of a vector.
+;;  - ILM, signifying the transition into the cdr position of a pair
+;;  - EOS, signifying the notional close-paren at the end of a compound.
 ;;  - any other value, representing itself.
+;; N.B. hash-tables cannot be Sigmas at present.
 (define-singleton-struct SOL start-of-list "<")
 (define-singleton-struct SOV start-of-vector "<vector")
 (define-singleton-struct ILM improper-list-marker "|")
 (define-singleton-struct EOS end-of-sequence ">")
 
-;; A Pattern is an atom, the special wildcard value, an
-;; embedded-matcher, or a Racket compound (struct, pair, or vector)
-;; containing Patterns.
+;; A Pattern is an atom, the special wildcard value (?), an
+;; (embedded-matcher Matcher), or a Racket compound (struct, pair, or
+;; vector) containing Patterns.
 (define-singleton-struct ? wildcard "★") ;; alternative printing: ¿
 (struct embedded-matcher (matcher) #:transparent)
 
+;; A Projection is an atom, the special wildcard value (?), a (capture
+;; Pattern), or a Racket compound (struct, pair, or vector) containing
+;; Projections. A Projection is much like a Pattern, but may include
+;; captures, and may not include embedded matchers.
+;;
 ;; When projecting a matcher, the capturing wildcard can be used.
 (struct capture (pattern) #:transparent)
 
-;; Capture with default of wildcard.
+;; [Pattern] -> Projection
+;; Construct a capture with default pattern of wildcard.
 (define (?! [pattern ?]) (capture pattern))
 
-;; Compiled projections include start-of-capture and end-of-capture
-;; elements.
+;; A CompiledProjection is a (Listof (U Sigma ? SOC EOC)). Compiled
+;; projections include start-of-capture and end-of-capture elements.
 (define-singleton-struct SOC start-of-capture "{{")
 (define-singleton-struct EOC end-of-capture "}}")
 
 ;; A Matcher is either
 ;; - #f, indicating no further matches possible
-;; - a (success Any), representing a successful match (if the end of the input has been reached)
-;; - a Hashtable mapping (Sigma or wildcard) to Matcher
+;; - a (success Any), representing a successful match (if the end of
+;;   the input has been reached)
+;; - a Hashtable mapping (U Sigma ?) to Matcher
 ;; - a (wildcard-sequence Matcher)
 ;; If, in a hashtable matcher, a wild key is present, it is intended
 ;; to catch all and ONLY those keys not otherwise present in the
@@ -106,6 +118,8 @@
 (struct success (value) #:transparent)
 (struct wildcard-sequence (matcher) #:transparent)
 
+;; Any -> Boolean
+;; Predicate recognising Matchers. Expensive!
 (define (matcher? x)
   (or (eq? x #f)
       (success? x)
@@ -114,14 +128,59 @@
 	   (for/and ([v (in-hash-values x)])
 	     (matcher? v)))))
 
+;; -> Matcher
+;; The empty Matcher
 (define (matcher-empty) #f)
+
+;; Matcher -> Boolean
+;; True iff the argument is the empty matcher
 (define (matcher-empty? r) (not r))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Smart constructors & accessors
+;;
+;; Maintain this INVARIANT: A Matcher is non-empty iff it contains
+;; some keys that map to some Values. Essentially, don't bother
+;; prepending tokens to a Matcher unless there's some possibility it
+;; can map to one or more Values.
+
+;; (Option Any) -> Matcher
+;; If the argument is #f, returns the empty matcher; otherwise, a success Matcher.
 (define (rsuccess v) (and v (success v)))
 
+;; (U Sigma ?) Matcher -> Matcher
+;; Prepends e to r, if r is non-empty.
 (define (rseq e r)   (if (matcher-empty? r) r (hash e r)))
+
+;; Matcher -> Matcher
+;; Prepends the wildcard pseudo-Sigma to r, if r is non-empty.
 (define (rwild r)    (rseq ? r))
+
+;; Matcher -> Matcher
+;; If r is non-empty, returns a matcher that consumes input up to and
+;; including EOS, then continuing with r.
 (define (rwildseq r) (if (matcher-empty? r) r (wildcard-sequence r)))
+
+;; Matcher (U Sigma ?) -> Matcher
+;; r must be a hashtable matcher. Retrieves the continuation after
+;; accepting key. If key is absent, returns the failing/empty matcher.
+(define (rlookup r key)
+  (hash-ref r key (lambda () #f)))
+
+;; Matcher (U Sigma ?) Matcher -> Matcher
+;; Updates (installs or removes) a continuation in a Matcher. r must
+;; be either #f or a hashtable matcher.
+(define (rupdate r key k)
+  (if (matcher-empty? k)
+      (and r
+	   (let ((r1 (hash-remove r key)))
+	     (if (zero? (hash-count r1))
+		 #f
+		 r1)))
+      (hash-set (or r (hash)) key k)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Pattern compilation
 
 ;; Any -> Boolean
 ;; Racket objects are structures, so we reject them explicitly for
@@ -130,10 +189,14 @@
   (and (struct? x)
        (not (object? x))))
 
+;; (A B -> B) B (Vectorof A) -> B
 (define (vector-foldr kons knil v)
   (for/fold [(acc knil)] [(elem (in-vector v (- (vector-length v) 1) -1 -1))]
     (kons elem acc)))
 
+;; Value (Listof Pattern) -> Matcher
+;; Compiles a sequence of patterns into a matcher that accepts input
+;; matching that sequence, yielding v.
 (define (pattern->matcher* v ps)
   (define (walk-list ps acc)
     (match ps
@@ -152,43 +215,42 @@
        (when skipped? (error 'pattern->matcher "Cannot reflect on struct instance ~v" p))
        (define fs (cdr (vector->list (struct->vector p))))
        (rseq t (foldr walk (rseq EOS acc) fs))]
-      ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
+      ;; TODO: consider options for treating hash tables as compounds
+      ;; rather than (useless) atoms
       [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
       [other (rseq other acc)]))
 
   (walk-list ps (rsuccess v)))
 
+;; Value Pattern* -> Matcher
+;; Convenience form of pattern->matcher*.
 (define (pattern->matcher v . ps)
   (pattern->matcher* v ps))
 
-(define (rlookup r key)
-  (hash-ref r key (lambda () #f)))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Matcher combinators
 
-(define (rupdate r key k)
-  (if (matcher-empty? k)
-      (and r
-	   (let ((r1 (hash-remove r key)))
-	     (if (zero? (hash-count r1))
-		 #f
-		 r1)))
-      (hash-set (or r (hash)) key k)))
-
+;; Sigma -> Boolean
+;; True iff k represents the start of a compound datum.
 (define (key-open? k)
   (or (eq? k SOL)
       (eq? k SOV)
       (struct-type? k)))
 
+;; Sigma -> Boolean
+;; True iff k represents the end of a compound datum.
 (define (key-close? k)
   (eq? k EOS))
 
-(define (key-normal? k)
-  (not (or (key-open? k)
-	   (key-close? k))))
-
+;; Matcher -> Matcher
+;; Unrolls the implicit recursion in a wildcard-sequence.
+;; Exploits the fact that (rwildseq r) === (matcher-union (rwild (rwildseq r)) (rseq EOS r)).
 (define (expand-wildseq r)
   (matcher-union (rwild (rwildseq r))
 		 (rseq EOS r)))
 
+;; Matcher Matcher -> Matcher
+;; Computes the union of the multimaps passed in.
 (define matcher-union
   (let ()
     (define (merge o1 o2)
@@ -227,11 +289,15 @@
 	(rupdate acc key k)))
     merge))
 
+;; Hashtable Hashtable -> Hashtable
+;; Returns the smaller of its arguments.
 (define (smaller-hash h1 h2)
   (if (< (hash-count h1) (hash-count h2))
       h1
       h2))
 
+;; Matcher Matcher -> Matcher
+;; Computes the intersection of the multimaps passed in.
 (define matcher-intersect
   (let ()
     ;; INVARIANT: re1 is a part of the original re1, and likewise for
@@ -285,6 +351,7 @@
 	[(r #f) #f]
 	[(r1 r2) (walk r1 r2)]))))
 
+;; Matcher Matcher -> Matcher
 ;; Removes re2's mappings from re1. Assumes re2 has previously been union'd into re1.
 ;; The combine-successes function should return #f to signal "no remaining success values".
 (define matcher-erase-path
@@ -350,6 +417,12 @@
 	[(#f r) (cofinite-pattern)]
 	[(r1 r2) (walk r1 r2)]))))
 
+;; Matcher -> Matcher
+;; Checks for redundant branches in its argument: when a matcher
+;; contains only entries for (EOS -> (wildcard-sequence m')) and
+;; (★ -> (wildcard-sequence m')), it is equivalent to
+;; (wildcard-sequence m') itself. This is in a way the inverse of
+;; expand-wildseq.
 (define (collapse-wildcard-sequences m)
   (match m
     [(? hash? h)
@@ -366,12 +439,23 @@
 	 h)]
     [other other]))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Matching single keys into a multimap
+
+;; (Listof Sigma) -> (Listof Sigma)
+;; Hackish support for improper lists. TODO: revisit
+;; Converts an improper list into a proper one with ILM in the penultimate position.
 (define (transform-list-value xs)
   (match xs
     ['() '()]
     [(cons x xs) (cons x (transform-list-value xs))]
     [other (cons ILM (cons other '()))]))
 
+;; Matcher InputValue [Value] -> Value
+;; Converts the nested structure v on-the-fly into a sequence of
+;; Sigmas and runs them through the Matcher r. If v leads to a success
+;; Matcher, returns the values contained in the success Matcher;
+;; otherwise, returns failure-result.
 (define (matcher-match-value r v [failure-result (set)])
   (if (matcher-empty? r)
       failure-result
@@ -421,6 +505,12 @@
 		[#f (walk-wild rest stack)]
 		[k (walk rest stack k)])])]))))
 
+;; Matcher Matcher -> Value
+;;
+;; Similar to matcher-match-value, but instead of a single key,
+;; accepts a Matcher serving as *multiple* simultaneously-examined
+;; keys. Returns the union of all successful values reached by the
+;; probe.
 (define matcher-match-matcher
   (let ()
     (define (walk re1 re2 acc)
@@ -464,6 +554,11 @@
 	[(r1 r2) (walk r1 r2 (matcher-match-matcher-unit))]))))
 
 ;; Matcher × (Value → Matcher) → Matcher
+;; Since Matchers accept *sequences* of input values, this appends two
+;; matchers into a single matcher that accepts their concatenation.
+;; Because matchers map inputs to values, the second matcher is
+;; expressed as a function from success-values from the first matcher
+;; to a second matcher.
 (define (matcher-append m0 m-tail-fn)
   (let walk ((m m0))
     (match m
@@ -475,6 +570,8 @@
 		       (matcher-union acc (m-tail-fn (success-value v)))
 		       (rupdate acc k (walk v))))])))
 
+;; Matcher (Value -> (Option Value)) -> Matcher
+;; Maps f over success values in m.
 (define (matcher-relabel m f)
   (let walk ((m m))
     (match m
@@ -483,6 +580,12 @@
       [(wildcard-sequence m1) (rwildseq (walk m1))]
       [(? hash?) (for/fold [(acc #f)] [((k v) (in-hash m))] (rupdate acc k (walk v)))])))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Projection
+
+;; (Listof Projection) -> CompiledProjection
+;; Compiles a sequence of projections into a single CompiledProjection
+;; for use with matcher-project.
 (define (compile-projection* ps)
   (define (walk-list ps acc)
     (match ps
@@ -508,9 +611,13 @@
 
   (walk-list ps '()))
 
+;; Projection* -> CompiledProjection
+;; Convenience form of compile-projection*.
 (define (compile-projection . ps)
   (compile-projection* ps))
 
+;; Projection -> Pattern
+;; Strips captures from its argument, returning an equivalent non-capturing pattern.
 (define (projection->pattern p)
   (let walk ((p p))
     (match p
@@ -523,12 +630,13 @@
        (when skipped? (error 'projection->pattern "Cannot reflect on struct instance ~v" p))
        (define fs (cdr (vector->list (struct->vector p))))
        (apply (struct-type-make-constructor t) (map walk fs))]
-      ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
+      ;; TODO: consider options for treating hash tables as compounds
+      ;; rather than (useless) atoms
       [(? hash?) (error 'projection->pattern "Cannot match on hash tables at present")]
       [other other])))
 
 ;; Matcher × CompiledProjection [× (Value -> (Option Value))] → Matcher
-;; The result matches a vector of length equal to the number of captures.
+;; The result matches a sequence of inputs of length equal to the number of captures.
 ;; The project-success function should return #f to signal "no success values".
 (define matcher-project
   ;; TODO: skip-nested, capture-nested, and various cases in walk all
@@ -625,6 +733,10 @@
     (lambda (m spec)
       (walk #f m spec))))
 
+;; (Listof Sigma) -> (Listof Sigma)
+;; Hackish support for improper lists. TODO: revisit
+;; Undoes the transformation of transform-list-value, converting
+;; ILM-marked proper lists back into improper ones.
 (define (untransform-list-value vs)
   (match vs
     ['() '()]
@@ -633,7 +745,9 @@
     [(cons v vs) (cons v (untransform-list-value vs))]))
 
 ;; Matcher → (Option (Setof (Listof Value)))
-;; Multiplies out unions. Returns #f if any dimension of m is infinite.
+;; Extracts the "keys" in its argument multimap m, representing input
+;; sequences as lists. Multiplies out unions. Returns #f if any
+;; dimension of m is infinite.
 (define matcher-key-set
   (let ()
     ;; Matcher (Value Matcher -> (Setof Value)) -> (Option (Setof Value))
@@ -697,10 +811,15 @@
   (define vss (matcher-key-set m))
   (and vss (for/set [(vs (in-set vss))] (car vs))))
 
+;; struct-type -> Symbol
+;; Extract just the name of the given struct-type.
 (define (struct-type-name st)
   (define-values (name x2 x3 x4 x5 x6 x7 x8) (struct-type-info st))
   name)
 
+;; Matcher [OutputPort] [#:indent Nat] -> Void
+;; Pretty-prints the given matcher on the given port, with
+;; second-and-subsequent lines indented by the given amount.
 (define (pretty-print-matcher m [port (current-output-port)] #:indent [initial-indent 0])
   (define (d x) (display x port))
   (define (walk i m)
@@ -735,6 +854,8 @@
   (newline port)
   m)
 
+;; Matcher (Value -> JSExpr) -> JSExpr
+;; Serializes a matcher to a JSON expression.
 (define (matcher->jsexpr m success->jsexpr)
   (let walk ((m m))
     (match m
@@ -752,11 +873,15 @@
 			   [else k])
 			 (walk v)))])))
 
+;; String -> String
+;; Undoes the encoding of struct-type names used in the JSON serialization of Matchers.
 (define (deserialize-struct-type-name stn)
   (define expected-paren-pos (- (string-length stn) 1))
   (and (char=? (string-ref stn expected-paren-pos) #\()
        (substring stn 0 expected-paren-pos)))
 
+;; JSExpr (JSExpr -> Value) [String -> (Option struct-type)] -> Matcher
+;; Deserializes a matcher from a JSON expression.
 (define (jsexpr->matcher j jsexpr->success [struct-type-name->struct-type (lambda () #f)])
   (let walk ((j j))
     (match j

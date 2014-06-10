@@ -1,4 +1,5 @@
 #lang racket/base
+;; Core implementation of network actors and Network Calculus (NC) communication API.
 
 (require racket/set)
 (require racket/match)
@@ -39,51 +40,121 @@
 	 log-events-and-actions?
 	 routing-implementation)
 
+;; A PID is a number uniquely identifying a Process within a World.
+;; Note that PIDs are only meaningful within the context of their
+;; World: they are not global Process identifiers.
+
+;; (Parameterof (Listof PID))
+;; Path to the active leaf in the process tree. The car end is the
+;; leaf; the cdr end, the root. Used for debugging purposes.
 (define pid-stack (make-parameter '()))
+
+;; (Parameterof Boolean)
+;; True when Worlds should log their internal actions for use in
+;; debugging.
 (define log-events-and-actions? (make-parameter #f))
 
 ;; TODO: support +Inf.0 as a level number
 
-;; Events
+;; An Event is a communication from a World to a Process contained
+;; within it. One of
+;;  - (routing-update Gestalt), description of change in the sender's interests/subscriptions
+;;  - (message Any Nat Boolean), a (multicast, in general) message sent by an actor
+;; A message's (feedback?) field is #f when it is a message
+;; originating from an advertiser/publisher and terminating with a
+;; subscriber, and #t in the opposite case.
 (struct routing-update (gestalt) #:prefab)
 (struct message (body meta-level feedback?) #:prefab)
 
-;; Actions (in addition to Events)
-;; (spawn is just process)
+;; An Action is a communication from a Process to its containing
+;; World, instructing the World to take some action on the Process's
+;; behalf. One of
+;;  - an Event: change in the Process's interests, or message from the Process
+;;  - a Process: instruction to spawn a new process as described
+;;  - (quit): instruction to terminate the sending process
 (struct quit () #:prefab)
 
-;; Intra-world signalling
+;; A PendingEvent is a description of a set of Events to be
+;; communicated to a World's Processes. In naïve implementations of
+;; NC, there is no distinction between Events and PendingEvents; here,
+;; we must ensure that the buffering delay doesn't affect the Gestalts
+;; communicated in routing-update Events, so a special record is used
+;; to capture the appropriate Gestalt environment.
+;;  - (pending-routing-update Gestalt Gestalt (Option PID))
 (struct pending-routing-update (aggregate affected-subgestalt known-target) #:prefab)
 
-;; Actors and Configurations
+;; A Process (a.k.a. Actor) describes a single actor in a World.
+;;  - (process Gestalt Behavior Any)
+;; The Gestalt describes the current interests of the Process: either
+;; those it was spawned with, or the most recent interests from a
+;; routing-update Action.
 (struct process (gestalt behavior state) #:transparent)
-(struct world (next-pid			;; Natural, PID for next-spawned process
-	       event-queue		;; Queue of Event
-	       runnable-pids		;; Set of PIDs
-	       partial-gestalt		;; Gestalt from local processes only; maps to PID
-	       full-gestalt		;; Union of partial-gestalt and downward-gestalt
-	       process-table		;; Hash from PID to Process
-	       downward-gestalt		;; Gestalt representing interests of outside world
-	       process-actions		;; Queue of (cons PID Action)
+
+;; A World (a.k.a Configuration) is the state of an actor representing
+;; a group of communicating Processes. The term is also used from time
+;; to time to denote the actor having a World as its state and
+;; world-handle-event as its Behavior.
+(struct world (next-pid			;; PID, for next-spawned process
+	       pending-event-queue	;; (Queueof PendingEvent)
+	       runnable-pids		;; (Setof PID), non-inert processes
+	       partial-gestalt		;; Gestalt, from local processes only; maps to PID
+	       full-gestalt		;; Gestalt, union of partial- and downward-gestalts
+	       process-table		;; (HashTable PID Process)
+	       downward-gestalt		;; Gestalt, representing interests of outside world
+	       process-actions		;; (Queueof (Pairof PID Action))
 	       ) #:transparent)
 
-;; Behavior : maybe event * state -> transition
+;; A Behavior is a ((Option Event) Any -> Transition): a function
+;; mapping an Event (or, in the #f case, a poll signal) and a
+;; Process's current state to a Transition.
+;;
+;; A Transition is either
+;;  - #f, a signal from a Process that it is inert and need not be
+;;        scheduled until some Event relevant to it arrives; or,
+;;  - a (transition Any (Constreeof Action)), a new Process state to
+;;        be held by its World and a sequence of Actions for the World
+;;        to take on the transitioning Process's behalf.
 (struct transition (state actions) #:transparent)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Protocol and utilities
 
+;; sub : Pattern [#:meta-level Nat] [#:level Nat] -> Gestalt
+;; pub : Pattern [#:meta-level Nat] [#:level Nat] -> Gestalt
+;;
+;; Construct atomic Gestalts representing subscriptions/advertisements
+;; matching the given pattern, at the given meta-level and level.
+;; These are frequently used in combination with gestalt-union when
+;; building spawn and routing-update Actions.
 (define (sub p #:meta-level [ml 0] #:level [l 0]) (simple-gestalt #f p l ml))
 (define (pub p #:meta-level [ml 0] #:level [l 0]) (simple-gestalt #t p l ml))
 
+;; Gestalt Any -> Boolean
+;; True iff m falls within the set of messages represented by the Gestalt.
 (define (gestalt-accepts? g m)
   (match-define (message b ml f?) m)
   (not (set-empty? (gestalt-match-value g b ml f?))))
 
+;; Behavior Any [Gestalt] -> Action
+;; Constructs a spawn Action for a new process with the given behavior
+;; and state. If a Gestalt is supplied, the new process will begin its
+;; existence with the corresponding subscriptions/advertisements/
+;; conversational-responsibilities.
 (define (spawn behavior state [gestalt (gestalt-empty)]) (process gestalt behavior state))
+
+;; send : Any [#:meta-level Nat] -> Action
+;; feedback : Any [#:meta-level Nat] -> Action
+;;
+;; Each constructs an Action that will deliver a body to peers at the
+;; given meta-level. (send) constructs messages that will be delivered
+;; to subscribers; (feedback), to advertisers.
 (define (send body #:meta-level [ml 0]) (message body ml #f))
 (define (feedback body #:meta-level [ml 0]) (message body ml #t))
 
+;; Action* -> Action
+;; Constructs an action which causes the creation of a new World
+;; Process. The given actions will be taken by a primordial process
+;; running in the context of the new World.
 (define (spawn-world . boot-actions)
   (spawn world-handle-event
 	 (enqueue-actions (world 0
@@ -97,25 +168,48 @@
 			  -1
 			  boot-actions)))
 
+;; Any -> Boolean; type predicates for Event and Action respectively.
 (define (event? x) (or (routing-update? x) (message? x)))
 (define (action? x) (or (event? x) (process? x) (quit? x)))
 
+;; (Any -> Transition) Transition -> Transition
+;; A kind of monad-ish bind operator: threads the state in t0 through
+;; k, appending the action sequence from t0 with that from the result
+;; of calling k.
+;; TODO: sort out exactly how #f should propagate here
 (define (transition-bind k t0)
   (match-define (transition state0 actions0) t0)
   (match (k state0)
     [(transition state1 actions1) (transition state1 (cons actions0 actions1))]
     [#f t0]))
 
+;; Transition (Any -> Transition)* -> Transition
+;; Each step is a function from state to Transition. The state in t0
+;; is threaded through the steps; the action sequences are appended.
 (define (sequence-transitions t0 . steps)
   (foldl transition-bind t0 steps))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Trigger guards
 
-;; Trigger-guards only pass through routing updates if there has been
-;; a change.
+;; TriggerGuards wrap process Behavior and state, only passing through
+;; routing-update Events to their contained process behavior/state if
+;; there has been a change. All other Events go straight through.
+;;
+;;  - (trigger-guard Gestalt Behavior Any)
+;;
+;; The structural similarity to Processes is meaningful: a Process
+;; describes the current interests of the Process, as well as its
+;; behavior. A TriggerGuard describes the current interests of the
+;; Process's *environment*, and doesn't bother passing on a
+;; routing-update unless the change is non-zero.
 (struct trigger-guard (gestalt handler state) #:transparent)
 
+;; Behavior :> (Option Event) TriggerGuard -> Transition
+;; Inspects the given event: if it is a routing update, the contained
+;; Gestalt is compared to the TriggerGuard's record of the previous
+;; Gestalt from the environment, and only if it is different is it
+;; passed on.
 (define (trigger-guard-handle e s0)
   (match-define (trigger-guard old-gestalt handler old-state) s0)
   (define (deliver s)
@@ -131,6 +225,8 @@
 	 (deliver (struct-copy trigger-guard s0 [gestalt new-gestalt])))]
     [_ (deliver s0)]))
 
+;; Process -> Process
+;; Wraps a Process in a TriggerGuard.
 (define (trigger-guard-process p)
   (match-define (process _ b s) p)
   (struct-copy process p [behavior trigger-guard-handle] [state (trigger-guard #f b s)]))
@@ -139,42 +235,50 @@
 ;; World implementation
 
 ;; Each time a world is handed an event from its environment, it:
-;;  1. dispatches events
+;;  1. dispatches PendingEvents
 ;;      a. removing them one-at-a-time from the queue
-;;      b. dispatching them to processes
-;;      c. updating process states and accumulating actions in the queue
+;;      b. converting them to Events and dispatching them to processes
+;;      c. updating process states and accumulating Actions in the queue
 ;;      d. any process that returned non-#f is considered "non-idle" for step 3.
-;;  2. performs actions
+;;  2. performs Actions
 ;;      a. removing them one-at-a-time from the queue
 ;;      b. interpreting them
-;;      c. updating world state and accumulating events in the queue
+;;      c. updating World state and accumulating PendingEvents in the queue
 ;;  3. steps non-idle processes
-;;      a. runs through the set of processes accumulated in 1d. above
+;;      a. runs through the runnable-pids set of processes accumulated in 1d. above
 ;;      b. any process that returned non-#f is put in the "non-idle" set for next time
-;;  4. yields updated world state and world actions to environment.
+;;  4. yields updated World state and world Actions to the environment.
 ;;
-;; Note that routing-update actions are queued internally as
-;; pending-routing-update structures, in order to preserve and
-;; communicate transient gestalt states to processes. In addition, the
+;; Note that routing-update Actions are queued as
+;; pending-routing-update structures in order to preserve and
+;; communicate transient Gestalt states to Processes. In addition, the
 ;; known-target field of a pending-routing-update structure is used to
-;; provide NC's initial gestalt signal to a newly-spawned process.
+;; provide NC's initial Gestalt signal to a newly-spawned process.
 ;;
 ;; TODO: should step 3 occur before step 1?
 
+;; World PID (Constreeof Action) -> World
+;; Stores actions taken by PID for later interpretation.
 (define (enqueue-actions w pid actions)
   (struct-copy world w
     [process-actions (queue-append-list (world-process-actions w)
 					(filter-map (lambda (a) (and (action? a) (cons pid a)))
 						    (flatten actions)))]))
 
+;; World -> Boolean
+;; True if the World has no further reductions it can take.
+;;
 ;; The code is written to maintain the runnable-pids set carefully, to
 ;; ensure we can locally decide whether we're inert or not without
 ;; having to search the whole deep process tree.
 (define (inert? w)
-  (and (queue-empty? (world-event-queue w))
+  (and (queue-empty? (world-pending-event-queue w))
        (queue-empty? (world-process-actions w))
        (set-empty? (world-runnable-pids w))))
 
+;; Event PID Process -> Transition
+;; Delivers the event to the process, catching any exceptions it
+;; throws and converting them to quit Actions.
 (define (deliver-event e pid p)
   (parameterize ((pid-stack (cons pid (pid-stack))))
     (when (and (log-events-and-actions?) e)
@@ -200,9 +304,16 @@
 	 (log-error "Process ~a returned non-#f, non-transition: ~v" (pid-stack) x)
 	 (transition (process-state p) (list (quit)))]))))
 
+;; World PID -> World
+;; Marks the given PID as not-provably-inert.
 (define (mark-pid-runnable w pid)
   (struct-copy world w [runnable-pids (set-add (world-runnable-pids w) pid)]))
 
+;; PID Transition World -> World
+;; Examines the given Transition, updating PID's Process's state and
+;; enqueueing Actions for later interpretation. When the Transition is
+;; non-#f, PID's Process may wish to take further internal reductions,
+;; so we mark it as runnable.
 (define (apply-transition pid t w)
   (match t
     [#f w]
@@ -221,41 +332,64 @@
 				    (struct-copy process p [state new-state])))))
        (enqueue-actions (mark-pid-runnable w pid) pid new-actions))]))
 
-(define (enqueue-event e w)
-  (struct-copy world w [event-queue (enqueue (world-event-queue w) e)]))
+;; PendingEvent World -> World
+;; Enqueue a PendingEvent for later interpretation and dispatch.
+(define (enqueue-pending-event e w)
+  (struct-copy world w [pending-event-queue (enqueue (world-pending-event-queue w) e)]))
 
+;; World -> Transition
+;; Examines all queued actions, interpreting them, updating World
+;; state, and possibly causing the World to send Actions for
+;; interpretation to its own containing World in turn.
 (define (perform-actions w)
   (for/fold ([t (transition (struct-copy world w [process-actions (make-queue)]) '())])
       ((entry (in-list (queue->list (world-process-actions w)))))
     (match-define (cons pid a) entry)
     (transition-bind (perform-action pid a) t)))
 
-(define (dispatch-events w)
-  (transition (for/fold ([w (struct-copy world w [event-queue (make-queue)])])
-		  ((e (in-list (queue->list (world-event-queue w)))))
-		(dispatch-event e w))
+;; World -> Transition
+;; Interprets queued PendingEvents, delivering resulting Events to Processes.
+(define (dispatch-pending-events w)
+  (transition (for/fold ([w (struct-copy world w [pending-event-queue (make-queue)])])
+		  ((e (in-list (queue->list (world-pending-event-queue w)))))
+		(dispatch-pending-event e w))
               '()))
 
+;; PID World (Process -> Process) -> World
+;; Extracts a Process by PID, maps fp over it, and stores the result back into the table.
 (define (transform-process pid w fp)
   (define pt (world-process-table w))
   (match (hash-ref pt pid)
     [#f w]
     [p (struct-copy world w [process-table (hash-set pt pid (fp p))])]))
 
+;; World -> World
+;; Updates the World's cached copy of the union of its partial- and downward-gestalts.
 (define (update-full-gestalt w)
   (struct-copy world w [full-gestalt
 			(gestalt-union (world-partial-gestalt w) (world-downward-gestalt w))]))
 
+;; World Gestalt (Option PID) -> World
+;; Constructs and enqueues a PendingEvent describing a change to the
+;; World's gestalt falling within the relevant-gestalt *subset* of it.
 (define (issue-local-routing-update w relevant-gestalt known-target)
-  (enqueue-event (pending-routing-update (world-full-gestalt w)
-					 relevant-gestalt
-					 known-target)
-		 w))
+  (enqueue-pending-event (pending-routing-update (world-full-gestalt w)
+						 relevant-gestalt
+						 known-target)
+			 w))
 
+;; World Gestalt (Option PID) -> Transition
+;; Communicates a change in World's gestalt falling within the
+;; relevant-gestalt *subset* of it both to local Processes and to the
+;; World's own containing World.
 (define (issue-routing-update w relevant-gestalt known-target)
   (transition (issue-local-routing-update w relevant-gestalt known-target)
               (routing-update (drop-gestalt (world-partial-gestalt w)))))
 
+;; World Gestalt Gestalt (Option PID) -> Transition
+;; Communicates a change in the World gestalt corresponding to a
+;; change in a single Process's gestalt. The old-gestalt is what the
+;; Process used to be interested in; new-gestalt is its new interests.
 (define (apply-and-issue-routing-update w old-gestalt new-gestalt known-target)
   (define new-partial
     (gestalt-union (gestalt-erase-path (world-partial-gestalt w) old-gestalt) new-gestalt))
@@ -263,6 +397,10 @@
 			(gestalt-union old-gestalt new-gestalt)
 			known-target))
 
+;; PID Action -> World -> Transition
+;; Interprets a single Action performed by PID, updating World state
+;; and possibly causing the World to take externally-visible Actions
+;; as a result.
 (define ((perform-action pid a) w)
   (match a
     [(? process? new-p)
@@ -300,10 +438,12 @@
 	 (transition w '()))]
     [(message body meta-level feedback?)
      (if (zero? meta-level)
-	 (transition (enqueue-event a w) '())
+	 (transition (enqueue-pending-event a w) '())
 	 (transition w (message body (- meta-level 1) feedback?)))]))
 
-(define (dispatch-event e w)
+;; PendingEvent World -> World
+;; Interprets a PendingEvent, delivering the resulting Event(s) to Processes.
+(define (dispatch-pending-event e w)
   (match e
     [(message body meta-level feedback?)
      (define pids (gestalt-match-value (world-partial-gestalt w) body meta-level feedback?))
@@ -320,7 +460,14 @@
 	 [p (define g1 (gestalt-filter g (process-gestalt p)))
 	    (apply-transition pid (deliver-event (routing-update g1) pid p) w)]))]))
 
-;; This is roughly the "schedule" rule of the calculus.
+;; World -> Transition
+;; Polls the non-provably-inert processes identified by the
+;; runnable-pids set (by sending them #f instead of an Event).
+;;
+;; N.B.: We also effectively compute whether this entire World is
+;; inert here.
+;;
+;; This is roughly the "schedule" rule of the Network Calculus.
 (define (step-children w)
   (define runnable-pids (world-runnable-pids w))
   (if (set-empty? runnable-pids)
@@ -331,14 +478,20 @@
 		    (if (not p) w (apply-transition pid (deliver-event #f pid p) w)))
 		  '()))) ;; world needs another check to see if more can happen.
 
+;; Behavior :> (Option Event) World -> Transition
+;; World's behavior function. Lifts and dispatches an incoming event
+;; to contained Processes.
 (define (world-handle-event e w)
   (if (or e (not (inert? w)))
       (sequence-transitions (transition (inject-event e w) '())
-			    dispatch-events
+			    dispatch-pending-events
 			    perform-actions
 			    (lambda (w) (or (step-children w) (transition w '()))))
       (step-children w)))
 
+;; Event World -> World
+;; Translates an event from the World's container into PendingEvents
+;; suitable for its own contained Processes.
 (define (inject-event e w)
   (match e
     [#f w]
@@ -350,6 +503,8 @@
 				 (gestalt-union old-downward new-downward)
 				 #f)]
     [(message body meta-level feedback?)
-     (enqueue-event (message body (+ meta-level 1) feedback?) w)]))
+     (enqueue-pending-event (message body (+ meta-level 1) feedback?) w)]))
 
+;; Symbol
+;; Describes the routing implementation, for use in profiling, debugging etc.
 (define routing-implementation 'fastrouting)

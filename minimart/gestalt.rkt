@@ -29,12 +29,21 @@
 	 gestalt->jsexpr
 	 jsexpr->gestalt)
 
-;; A Gestalt is a (gestalt (Listof (Listof (Pairof Matcher Matcher)))),
-;; representing the total interests of a process or group of
-;; processes.
+;; A Gestalt is a (gestalt (Listof Metalevel)), representing the total
+;; interests of a process or group of processes at all metalevels and
+;; levels.
 ;;
-;; The outer list has an entry for each active metalevel, starting
-;; with metalevel 0 in the car.
+;; A Level is a (Pairof Matcher Matcher), representing active
+;; subscriptions and advertisements at a particular level and
+;; metalevel.
+;;
+;; A Metalevel is a (Listof Level), representing all Levels (ordered
+;; by level number) at a given metalevel.
+;;
+;; --
+;;
+;; The outer list of a Gestalt has an entry for each active metalevel,
+;; starting with metalevel 0 in the car.
 ;;
 ;; The middle list has an entry for each active level within its
 ;; metalevel, starting with level 0 in the car.
@@ -44,6 +53,7 @@
 ;;
 ;; Each of the Matchers maps to (NonemptySetof PID).
 ;;
+;; --
 ;;
 ;;    "... a few standardised subsystems, identical from citizen to
 ;;     citizen. Two of these were channels for incoming data — one for
@@ -59,44 +69,69 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; (Listof X) Nat [-> X] -> X
 (define (safe-list-ref xs n [fail-thunk (lambda () (error 'safe-list-ref "No such index ~v" n))])
   (let loop ((xs xs) (n n))
     (match xs
       ['() (fail-thunk)]
       [(cons x xs) (if (zero? n) x (loop xs (- n 1)))])))
 
+;; (Listof X) -> (Listof X)
+;; ->> HISTORICAL IRONY <<-
 (define (safe-cdr xs)
   (if (null? xs)
       '()
       (cdr xs)))
 
+;; X -> X (Listof X) -> (Listof X)
+;; Conses a onto d, unless d is '() and a is the special unit value.
 (define ((guarded-cons unit) a d)
   (if (and (null? d) (equal? a unit))
       '()
       (cons a d)))
 
+;; Level
+;; The empty level, matching no messages.
 (define empty-level '(#f . #f))
+
+;; The empty metalevel, matching no messages at any level.
 (define empty-metalevel '())
 
+;; Level Metalevel -> Metalevel
+;; Only adds to its second argument if its first is nonempty.
 (define cons-level (guarded-cons empty-level))
+
+;; Metalevel (Listof Metalevel) -> (Listof Metalevel).
+;; Only adds to its second argument if its first is nonempty.
 (define cons-metalevel (guarded-cons empty-metalevel))
 
 ;; Gestalt × Value × Natural × Boolean → (Setof PID)
+;; Retrieves those PIDs that have active subscriptions/advertisements
+;; covering the given message at the given metalevel.
 (define (gestalt-match-value g body metalevel is-feedback?)
   (define levels (safe-list-ref (gestalt-metalevels g) metalevel (lambda () empty-metalevel)))
   (for/fold [(acc (set))] [(level (in-list levels))]
     (define matcher ((if is-feedback? cdr car) level)) ;; feedback targets advertisers/publishers
     (set-union (matcher-match-value matcher body) acc)))
 
+;; (Listof Projection) -> CompiledProjection
+;; For use with gestalt-project.
 (define (compile-gestalt-projection* specs)
   (compile-projection* specs))
 
+;; Projection* -> CompiledProjection
+;; For use with gestalt-project.
 (define (compile-gestalt-projection . specs)
   (compile-gestalt-projection* specs))
 
+;; CompiledProjection
+;; Represents a projection that simply captures the entirety of the
+;; projected matcher; useful as an identity projection.
 (define capture-everything-projection (compile-gestalt-projection (?!)))
 
-;; Gestalt × Natural × Natural × Boolean × CompiledSpec → Matcher
+;; Gestalt × Natural × Natural × Boolean × CompiledProjection → Matcher
+;; Retrieves the Matcher within g at the given metalevel and level,
+;; representing subscriptions or advertisements, projected by capture-spec.
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
   (define levels (safe-list-ref (gestalt-metalevels g) metalevel (lambda () empty-metalevel)))
   (define matcher ((if get-advertisements? cdr car)
@@ -105,30 +140,57 @@
       matcher
       (matcher-project matcher capture-spec)))
 
+;; Gestalt -> Gestalt
+;; Discards the 0th metalevel, renumbering others appropriately.
+;; Used to map a Gestalt from a World to Gestalts of its containing World.
 (define (drop-gestalt g)
   (gestalt (safe-cdr (gestalt-metalevels g))))
 
+;; Gestalt -> Gestalt
+;; Adds a fresh empty 0th metalevel, renumbering others appropriately.
+;; Used to map Gestalt from a World's container to the World's own Gestalt.
 (define (lift-gestalt g)
   (gestalt (cons-metalevel empty-metalevel (gestalt-metalevels g))))
 
+;; Nat X (Listof X) -> (Listof X)
+;; Prepends n references to x to xs.
 (define (prepend n x xs)
   (if (zero? n)
       xs
       (cons x (prepend (- n 1) x xs))))
 
+;; Boolean Pattern Nat Nat -> Gestalt
+;; Compiles p and embeds it at the appropriate level and metalevel
+;; within a Gestalt. Used by (pub) and (sub) to construct "atomic"
+;; Gestalts.
 (define (simple-gestalt is-adv? p level metalevel)
   (define m (pattern->matcher #t p))
   (gestalt (prepend metalevel empty-metalevel
 		    (list (prepend level empty-level
 				   (list (if is-adv? (cons #f m) (cons m #f))))))))
 
+;; -> Gestalt
+;; The empty gestalt.
 (define (gestalt-empty) (gestalt '()))
 
+;; Gestalt -> Boolean
+;; True iff the gestalt matches no messages.
+;; TODO: our invariants should ensure that (gestalt-empty? g) iff (equal? g (gestalt '())).
+;;       Make sure this actually is true.
 (define (gestalt-empty? g)
   (andmap (lambda (ml)
 	    (andmap (lambda (l) (and (matcher-empty? (car l)) (matcher-empty? (cdr l)))) ml))
 	  (gestalt-metalevels g)))
 
+;; map-zip: ((U 'right-longer 'left-longer) (Listof X) -> (Listof Y))
+;;          (X X -> Y)
+;;          (Y (Listof Y) -> (Listof Y))
+;;          (Listof X)
+;;          (Listof X)
+;;       -> (Listof Y)
+;; Horrific map-like function that isn't quite as picky as map about
+;; ragged input lists. The imbalance-handler is used to handle ragged
+;; inputs.
 (define (map-zip imbalance-handler item-handler gcons ls1 ls2)
   (let walk ((ls1 ls1) (ls2 ls2))
     (match* (ls1 ls2)
@@ -138,14 +200,20 @@
       [((cons l1 ls1) (cons l2 ls2))
        (gcons (item-handler l1 l2) (walk ls1 ls2))])))
 
-(define (gestalt-combine g1 g2 imbalance-handler matcher-pair-combiner)
+;; Gestalt Gestalt (...->...) (Level Level -> Level) -> Gestalt
+;; Combine two gestalts with the given level-combiner.
+;; The type of imbalance-handler is awkward because of the punning.
+(define (gestalt-combine g1 g2 imbalance-handler level-combiner)
   (gestalt (map-zip imbalance-handler
 		    (lambda (ls1 ls2)
-		      (map-zip imbalance-handler matcher-pair-combiner cons-level ls1 ls2))
+		      (map-zip imbalance-handler level-combiner cons-level ls1 ls2))
 		    cons-metalevel
 		    (gestalt-metalevels g1)
 		    (gestalt-metalevels g2))))
 
+;; Gestalt Gestalt (...->...) (Matcher Matcher -> Matcher) -> Gestalt
+;; Combines g1 and g2, giving subs/subs and advs/advs from g1 and g2
+;; to the matcher-combiner.
 (define (gestalt-combine-straight g1 g2 imbalance-handler matcher-combiner)
   (gestalt-combine g1 g2
 		   imbalance-handler
@@ -153,6 +221,8 @@
 		     (cons (matcher-combiner (car sa1) (car sa2))
 			   (matcher-combiner (cdr sa1) (cdr sa2))))))
 
+;; Gestalt* -> Gestalt
+;; Computes the union of its arguments.
 (define (gestalt-union . gs)
   (if (null? gs)
       (gestalt-empty)
@@ -161,8 +231,11 @@
 	  [(list g) g]
 	  [(cons g rest) (gestalt-union1 g (walk rest))]))))
 
+;; Gestalt Gestalt -> Gestalt
+;; Computes the union of its arguments.
 (define (gestalt-union1 g1 g2) (gestalt-combine-straight g1 g2 (lambda (side x) x) matcher-union))
 
+;; Gestalt Gestalt -> Gestalt
 ;; View on g1 from g2's perspective.
 (define gestalt-filter
   (let ()
@@ -196,6 +269,7 @@
       (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
 	(gestalt (filter-metalevels (gestalt-metalevels g1) (gestalt-metalevels g2)))))))
 
+;; Gestalt Gestalt -> (Setof PID)
 ;; Much like gestalt-filter, takes a view on gestalt g1 from g2's
 ;; perspective. However, instead of returning the filtered g1, returns
 ;; just the set of values in the g2-map that were overlapped by some
@@ -231,16 +305,23 @@
 		     (matcher-match-matcher-unit (set)))
 	(match-metalevels (gestalt-metalevels g1) (gestalt-metalevels g2) (set))))))
 
+;; Gestalt Gestalt -> Gestalt
+;; Erases the g2-subset of g1 from g1, yielding the result.
 (define (gestalt-erase-path g1 g2)
   (gestalt-combine-straight g1 g2
 			    erase-imbalance-handler
 			    matcher-erase-path))
 
+;; (U 'right-longer 'left-longer) (Listof X) -> (Listof X)
+;; Asymmetric imbalance handler suitable for use in subtraction operations.
 (define (erase-imbalance-handler side x)
   (case side
     [(left-longer) x]
     [(right-longer) '()]))
 
+;; Gestalt (Nat Nat Level -> Level) -> Gestalt
+;; Maps f over all levels in g, passing f the metalevel number, the
+;; level number, and the level itself, in that order.
 (define (gestalt-transform g f)
   (gestalt (let loop-outer ((mls (gestalt-metalevels g)) (i 0))
 	     (cond [(null? mls) '()]
@@ -251,16 +332,24 @@
 						    (loop-inner (cdr ls) (+ j 1)))]))
 			  (loop-outer (cdr mls) (+ i 1)))]))))
 
+;; Gestalt (Matcher -> Matcher) -> Gestalt
+;; Maps f over all matchers in g.
 (define (gestalt-matcher-transform g f)
   (gestalt-transform g (lambda (i j p) (cons (f (car p)) (f (cdr p))))))
 
+;; Gestalt -> GestaltSet
+;; Blurs the distinctions between mapped-to processes in g.
 (define (strip-gestalt-label g)
   (gestalt-matcher-transform g (lambda (m) (matcher-relabel m (lambda (v) #t)))))
 
+;; GestaltSet -> Gestalt
+;; Relabels g so that all matched keys map to (set pid).
 (define (label-gestalt g pid)
   (define pidset (set pid))
   (gestalt-matcher-transform g (lambda (m) (matcher-relabel m (lambda (v) pidset)))))
 
+;; Gestalt [OutputPort] -> Void
+;; Pretty-prints g on port.
 (define (pretty-print-gestalt g [port (current-output-port)])
   (if (gestalt-empty? g)
       (fprintf port "EMPTY GESTALT\n")
@@ -272,9 +361,13 @@
 	    (when subs (fprintf port "  - subs:") (pretty-print-matcher subs port #:indent 9))
 	    (when advs (fprintf port "  - advs:") (pretty-print-matcher advs port #:indent 9)))))))
 
+;; Gestalt -> String
+;; Returns a string containing the pretty-printing of g.
 (define (gestalt->pretty-string g)
   (with-output-to-string (lambda () (pretty-print-gestalt g))))
 
+;; Gestalt [(Value -> JSExpr)] -> JSExpr
+;; Serializes a gestalt to a JSON expression.
 (define (gestalt->jsexpr g [success->jsexpr (lambda (v) #t)])
   (list "gestalt" (for/list [(ls (in-list (gestalt-metalevels g)))]
 		    (for/list [(l (in-list ls))]
@@ -282,6 +375,8 @@
 		      (list (matcher->jsexpr subs success->jsexpr)
 			    (matcher->jsexpr advs success->jsexpr))))))
 
+;; JSExpr [(JSExpr -> Value)] -> Gestalt
+;; Deserializes a gestalt from a JSON expression.
 (define (jsexpr->gestalt j [jsexpr->success (lambda (v) #t)])
   (match j
     [(list "gestalt" mlsj)
