@@ -26,8 +26,8 @@
 ;; after the asked-for time. That way it serves as timeout and
 ;; clock-reader in one.
 (define (timer-evt msecs)
-  (wrap-evt (alarm-evt msecs)
-	    (lambda (_) (current-inexact-milliseconds))))
+  (handle-evt (alarm-evt msecs)
+	      (lambda (_) (current-inexact-milliseconds))))
 
 (define (make-timer-heap)
   (make-heap (lambda (t1 t2) (<= (pending-timer-deadline t1) (pending-timer-deadline t2)))))
