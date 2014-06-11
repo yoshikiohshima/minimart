@@ -98,10 +98,14 @@
 ;; - (success Any), representing a successful match (if the end of
 ;;   the input has been reached)
 ;; - (HashTable (U Sigma Wildcard) Matcher), {TODO}
+;; TODO::: reimplement to use (ordinary-state (Option Matcher) (HashTable Sigma Matcher)), {TODO}
 ;; - (wildcard-sequence Matcher), {TODO}
 ;; If, in a hashtable matcher, a wild key is present, it is intended
 ;; to catch all and ONLY those keys not otherwise present in the
 ;; table.
+;; INVARIANT: success only appears right at the end. Never in the middle. Never unbalanced parens. TODO
+;;            TODO as part of this: figure out whether we can get rid of the seemingly mandatory EOS-success
+;;                 pattern that always shows up
 (struct success (value) #:transparent)
 (struct wildcard-sequence (matcher) #:transparent)
 
@@ -167,43 +171,93 @@
 ;; prepending tokens to a Matcher unless there's some possibility it
 ;; can map to one or more Values.
 
-;; (Option Any) -> Matcher
+;; (Option Value) -> Matcher
 ;; If the argument is #f, returns the empty matcher; otherwise, a success Matcher.
-(define (rsuccess v) (and v (success v)))
+(define (rsuccess v)
+  (and v (success v)))
 
-;; (U Sigma ?) Matcher -> Matcher
+;; (U Sigma Wildcard) Matcher -> Matcher
 ;; Prepends e to r, if r is non-empty.
-(define (rseq e r)   (if (matcher-empty? r) r (hash e r)))
+(define (rseq e r)
+  (if (matcher-empty? r) r (hash e r)))
 
 ;; Matcher -> Matcher
 ;; Prepends the wildcard pseudo-Sigma to r, if r is non-empty.
-(define (rwild r)    (rseq ? r))
+(define (rwild r)
+  (rseq ? r))
 
 ;; Matcher -> Matcher
 ;; If r is non-empty, returns a matcher that consumes input up to and
 ;; including EOS, then continuing with r.
-(define (rwildseq r) (if (matcher-empty? r) r (wildcard-sequence r)))
+(define (rwildseq r)
+  (if (matcher-empty? r) r (wildcard-sequence r)))
 
-;; Matcher (U Sigma ?) -> Matcher
+;; Matcher (U Sigma Wildcard) -> Matcher
 ;; r must be a hashtable matcher. Retrieves the continuation after
 ;; accepting key. If key is absent, returns the failing/empty matcher.
 (define (rlookup r key)
   (hash-ref r key (lambda () #f)))
 
-;; Matcher (U Sigma ?) Matcher -> Matcher
-;; Updates (installs or removes) a continuation in a Matcher. r must
+;; (Option (HashTable (U Sigma Wildcard) Matcher)) (U Sigma Wildcard) Matcher -> Matcher
+;; Updates (installs or removes) a continuation in the Matcher r. r must
 ;; be either #f or a hashtable matcher.
 (define (rupdate r key k)
-  (if (matcher-empty? k)
-      (and r
-	   (let ((r1 (hash-remove r key)))
-	     (if (zero? (hash-count r1))
-		 #f
-		 r1)))
-      (hash-set (or r (hash)) key k)))
+  (empty-hash-guard
+   (if (matcher-empty? k)
+       (hash-remove (or r (hash)) key)
+       (hash-set (or r (hash)) key k))))
+
+;; Hash -> Matcher
+;; If the argument is empty, returns the canonical empty matcher;
+;; otherwise, returns the argument.
+(define (empty-hash-guard h)
+  (and (positive? (hash-count h)) h))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pattern compilation
+
+;; Value (Listof Pattern) -> Matcher
+;; Compiles a sequence of patterns into a matcher that accepts input
+;; matching that sequence, yielding v.
+(define (pattern->matcher* v ps0)
+  ;; Pattern Matcher -> Matcher
+  ;; acc is the continuation-matcher for the matcher created from ps.
+  (define (walk-pair-chain ps acc)
+    (match ps
+      ['() (rseq EOS acc)]
+      [(cons p ps) (walk p (walk-pair-chain ps acc))]
+      [other (rseq ILM (walk other (rseq EOS acc)))]))
+
+  ;; Pattern Matcher -> Matcher
+  ;; acc is the continuation-matcher for the matcher created from p.
+  (define (walk p acc)
+    (match p
+      [(== ?) (rwild acc)]
+      [(cons p1 p2) (rseq SOL (walk p1 (walk-pair-chain p2 acc)))]
+      [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
+      [(embedded-matcher m) (matcher-append m (lambda (_mv) acc))]
+      [(? non-object-struct?)
+       (rseq (struct->struct-type p)
+	     (walk-pair-chain (cdr (vector->list (struct->vector p)))
+			      acc))]
+      ;; TODO: consider options for treating hash tables as compounds
+      ;; rather than (useless) atoms
+      [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
+      [other (rseq other acc)]))
+
+  (walk-pair-chain ps0 (rsuccess v)))
+
+;; Value Pattern* -> Matcher
+;; Convenience form of pattern->matcher*.
+(define (pattern->matcher v . ps)
+  (pattern->matcher* v ps))
+
+;; Structure -> StructType
+;; Errors when given any struct that isn't completely transparent/prefab.
+(define (struct->struct-type p)
+  (define-values (t skipped?) (struct-info p))
+  (when skipped? (error 'struct->struct-type "Cannot reflect on struct instance ~v" p))
+  t)
 
 ;; Any -> Boolean
 ;; Racket objects are structures, so we reject them explicitly for
@@ -217,65 +271,14 @@
   (for/fold [(acc knil)] [(elem (in-vector v (- (vector-length v) 1) -1 -1))]
     (kons elem acc)))
 
-;; Value (Listof Pattern) -> Matcher
-;; Compiles a sequence of patterns into a matcher that accepts input
-;; matching that sequence, yielding v.
-(define (pattern->matcher* v ps)
-  (define (walk-list ps acc)
-    (match ps
-      ['() (rseq EOS acc)]
-      [(cons p ps) (walk p (walk-list ps acc))]
-      [other (rseq ILM (walk other (rseq EOS acc)))]))
-
-  (define (walk p acc)
-    (match p
-      [(== ?) (rwild acc)]
-      [(cons p1 p2) (rseq SOL (walk p1 (walk-list p2 acc)))]
-      [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
-      [(embedded-matcher m) (matcher-append m (lambda (mv) acc))]
-      [(? non-object-struct?)
-       (define-values (t skipped?) (struct-info p))
-       (when skipped? (error 'pattern->matcher "Cannot reflect on struct instance ~v" p))
-       (define fs (cdr (vector->list (struct->vector p))))
-       (rseq t (foldr walk (rseq EOS acc) fs))]
-      ;; TODO: consider options for treating hash tables as compounds
-      ;; rather than (useless) atoms
-      [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
-      [other (rseq other acc)]))
-
-  (walk-list ps (rsuccess v)))
-
-;; Value Pattern* -> Matcher
-;; Convenience form of pattern->matcher*.
-(define (pattern->matcher v . ps)
-  (pattern->matcher* v ps))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Matcher combinators
-
-;; Sigma -> Boolean
-;; True iff k represents the start of a compound datum.
-(define (key-open? k)
-  (or (eq? k SOL)
-      (eq? k SOV)
-      (struct-type? k)))
-
-;; Sigma -> Boolean
-;; True iff k represents the end of a compound datum.
-(define (key-close? k)
-  (eq? k EOS))
-
-;; Matcher -> Matcher
-;; Unrolls the implicit recursion in a wildcard-sequence.
-;; Exploits the fact that (rwildseq r) === (matcher-union (rwild (rwildseq r)) (rseq EOS r)).
-(define (expand-wildseq r)
-  (matcher-union (rwild (rwildseq r))
-		 (rseq EOS r)))
 
 ;; Matcher Matcher -> Matcher
 ;; Computes the union of the multimaps passed in.
 (define matcher-union
   (let ()
+    ;; TODO: fold in the #f-checks from merge to walk, like js-marketplace does
     (define (merge o1 o2)
       (match* (o1 o2)
 	[(#f #f) #f]
@@ -290,10 +293,7 @@
 	[((success v1) (success v2)) (rsuccess ((matcher-union-successes) v1 v2))]
 	[((? hash? h1) (? hash? h2))
 	 (define w (merge (rlookup h1 ?) (rlookup h2 ?)))
-	 (cond
-	  [w (merge/wildcard w h1 h2)]
-	  [(< (hash-count h1) (hash-count h2)) (merge/no-wildcard merge h1 h2)]
-	  [else (merge/no-wildcard (lambda (o2 o1) (merge o1 o2)) h2 h1)])]))
+	 (if w (merge/wildcard w h1 h2) (merge/no-wildcard h1 h2))]))
     (define (merge/wildcard w h1 h2)
       (for/fold [(acc (rwild w))]
 	  [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
@@ -306,18 +306,17 @@
 					(merge (wildcard-sequence-matcher w) k)
 					k)]
 		  [else (merge w k)]))))
-    (define (merge/no-wildcard merge-fn h1 h2)
-      (for/fold [(acc h2)] [((key k1) (in-hash h1))]
-	(define k (merge-fn k1 (rlookup h2 key)))
-	(rupdate acc key k)))
+    (define (merge/no-wildcard h1 h2)
+      (define-values (merge-fn smaller-h larger-h)
+	(if (< (hash-count h1) (hash-count h2))
+	    (values merge h1 h2)
+	    (values (flip merge) h2 h1)))
+      (for/fold [(acc larger-h)] [((key k1) (in-hash smaller-h))]
+	(rupdate acc key (merge-fn k1 (rlookup larger-h key)))))
     merge))
 
-;; Hashtable Hashtable -> Hashtable
-;; Returns the smaller of its arguments.
-(define (smaller-hash h1 h2)
-  (if (< (hash-count h1) (hash-count h2))
-      h1
-      h2))
+;; (A B -> C) -> A B -> B A -> C
+(define ((flip f) a b) (f b a))
 
 ;; Matcher Matcher -> Matcher
 ;; Computes the intersection of the multimaps passed in.
@@ -341,8 +340,8 @@
 		    key
 		    (match* ((rlookup h1 key) (rlookup h2 key))
 		      [(#f #f) #f]
-		      [(#f k2) (walk-wild                          walk w1 key k2)]
-		      [(k1 #f) (walk-wild (lambda (a2 a1) (walk a1 a2)) w2 key k1)]
+		      [(#f k2) (walk-wild       walk  w1 key k2)]
+		      [(k1 #f) (walk-wild (flip walk) w2 key k1)]
 		      [(k1 k2) (walk k1 k2)])))
 	 ;; If, say, w1 is #f, then we don't need to examine
 	 ;; every key in h2. So there are four cases:
@@ -462,6 +461,32 @@
 	 h)]
     [other other]))
 
+;; Sigma -> Boolean
+;; True iff k represents the start of a compound datum.
+(define (key-open? k)
+  (or (eq? k SOL)
+      (eq? k SOV)
+      (struct-type? k)))
+
+;; Sigma -> Boolean
+;; True iff k represents the end of a compound datum.
+(define (key-close? k)
+  (eq? k EOS))
+
+;; Matcher -> Matcher
+;; Unrolls the implicit recursion in a wildcard-sequence.
+;; Exploits the fact that (rwildseq r) === (matcher-union (rwild (rwildseq r)) (rseq EOS r)).
+(define (expand-wildseq r)
+  (matcher-union (rwild (rwildseq r))
+		 (rseq EOS r)))
+
+;; Hashtable Hashtable -> Hashtable
+;; Returns the smaller of its arguments.
+(define (smaller-hash h1 h2)
+  (if (< (hash-count h1) (hash-count h2))
+      h1
+      h2))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Matching single keys into a multimap
 
@@ -517,12 +542,9 @@
 		[#f (walk-wild rest stack)]
 		[k (walk vv (cons rest stack) k)])]
 	     [(cons (? non-object-struct? s) rest)
-	      (define-values (t skipped?) (struct-info s))
-	      (when skipped? (error 'matcher-match-value "Cannot reflect on struct instance ~v" s))
-	      (define fs (cdr (vector->list (struct->vector s))))
-	      (match (rlookup r t)
+	      (match (rlookup r (struct->struct-type s))
 		[#f (walk-wild rest stack)]
-		[k (walk fs (cons rest stack) k)])]
+		[k (walk (cdr (vector->list (struct->vector s))) (cons rest stack) k)])]
 	     [(cons v rest)
 	      (match (rlookup r v)
 		[#f (walk-wild rest stack)]
@@ -609,30 +631,29 @@
 ;; (Listof Projection) -> CompiledProjection
 ;; Compiles a sequence of projections into a single CompiledProjection
 ;; for use with matcher-project.
-(define (compile-projection* ps)
-  (define (walk-list ps acc)
+(define (compile-projection* ps0)
+  (define (walk-pair-chain ps acc)
     (match ps
       ['() (cons EOS acc)]
-      [(cons p ps) (walk p (walk-list ps acc))]
+      [(cons p ps) (walk p (walk-pair-chain ps acc))]
       [other (cons ILM (walk other (cons EOS acc)))]))
 
   (define (walk p acc)
     (match p
       [(capture sub) (cons SOC (walk sub (cons EOC acc)))] ;; TODO: enforce non-nesting here
       [(== ?) (cons ? acc)]
-      [(cons p1 p2) (cons SOL (walk p1 (walk-list p2 acc)))]
+      [(cons p1 p2) (cons SOL (walk p1 (walk-pair-chain p2 acc)))]
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
       [(embedded-matcher m) (error 'compile-projection "Cannot embed matcher in projection")]
       [(? non-object-struct?)
-       (define-values (t skipped?) (struct-info p))
-       (when skipped? (error 'compile-projection "Cannot reflect on struct instance ~v" p))
-       (define fs (cdr (vector->list (struct->vector p))))
-       (cons t (foldr walk (cons EOS acc) fs))]
+       (cons (struct->struct-type p)
+	     (walk-pair-chain (cdr (vector->list (struct->vector p)))
+			      acc))]
       ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
       [(? hash?) (error 'compile-projection "Cannot match on hash tables at present")]
       [other (cons other acc)]))
 
-  (walk-list ps '()))
+  (walk-pair-chain ps0 '()))
 
 ;; Projection* -> CompiledProjection
 ;; Convenience form of compile-projection*.
