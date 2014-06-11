@@ -1,5 +1,6 @@
 #lang racket/base
 
+(require racket/async-channel)
 (require racket/set)
 (require racket/match)
 (require racket/list)
@@ -7,9 +8,17 @@
 (require "gestalt.rkt")
 
 (provide (struct-out event)
+	 send-ground-message
 	 run-ground)
 
 (struct event (descriptor values) #:prefab)
+
+(define current-ground-event-async-channel (make-parameter #f))
+
+(define (send-ground-message body)
+  (match (current-ground-event-async-channel)
+    [(? async-channel? ch) (async-channel-put ch (send body))]
+    [_ (error 'send-ground-message "Called outside dynamic scope of run-ground")]))
 
 (define (event-handler descriptor)
   (handle-evt descriptor (lambda vs (send (event descriptor vs)))))
@@ -31,29 +40,31 @@
   (handle-evt (system-idle-evt) (lambda _ #f)))
 
 (define (run-ground . boot-actions)
-  (let await-interrupt ((inert? #f) (p (spawn-world boot-actions)) (active-events '()))
-    (define event-list (if inert?
-			   active-events
-			   (cons idle-handler active-events)))
-    (if (null? event-list)
-	(begin (log-info "run-ground: Terminating because inert")
-	       (void))
-	(let ((e (apply sync event-list)))
-	  (match (deliver-event e -2 p)
-	    [#f ;; inert
-	     (await-interrupt #t p active-events)]
-	    [(transition new-state actions)
-	     (let process-actions ((actions (flatten actions)) (active-events active-events))
-	       (match actions
-		 ['()
-		  (await-interrupt #f (struct-copy process p [state new-state]) active-events)]
-		 [(cons a actions)
-		  (match a
-		    [(routing-update gestalt)
-		     (process-actions actions (extract-active-events gestalt))]
-		    [(quit)
-		     (log-info "run-ground: Terminating by request")
-		     (void)]
-		    [_
-		     (log-warning "run-ground: ignoring useless meta-action ~v" a)
-		     (process-actions actions active-events)])]))])))))
+  (parameterize ((current-ground-event-async-channel (make-async-channel)))
+    (let await-interrupt ((inert? #f) (p (spawn-world boot-actions)) (active-events '()))
+      (define event-list (cons (current-ground-event-async-channel)
+			       (if inert?
+				   active-events
+				   (cons idle-handler active-events))))
+      (if (null? event-list)
+	  (begin (log-info "run-ground: Terminating because inert")
+		 (void))
+	  (let ((e (apply sync event-list)))
+	    (match (deliver-event e -2 p)
+	      [#f ;; inert
+	       (await-interrupt #t p active-events)]
+	      [(transition new-state actions)
+	       (let process-actions ((actions (flatten actions)) (active-events active-events))
+		 (match actions
+		   ['()
+		    (await-interrupt #f (struct-copy process p [state new-state]) active-events)]
+		   [(cons a actions)
+		    (match a
+		      [(routing-update gestalt)
+		       (process-actions actions (extract-active-events gestalt))]
+		      [(quit)
+		       (log-info "run-ground: Terminating by request")
+		       (void)]
+		      [_
+		       (log-warning "run-ground: ignoring useless meta-action ~v" a)
+		       (process-actions actions active-events)])]))]))))))
