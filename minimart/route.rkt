@@ -2,22 +2,23 @@
 ;; Implements a nested-word-like automaton mapping sets of messages to sets of other values.
 ;; A kind of "regular-expression"-keyed multimap.
 
-(require racket/set)
-(require racket/match)
-(require (only-in racket/port call-with-output-string))
-(require (only-in racket/class object?))
+;; TODO: More global purpose statement.
+;; TODO: Some examples showing the idea(s).
 
-(require rackunit)
+;; TODO: rename to matcher.rkt or similar.
+;; TODO: Ontology
 
-(provide ?
+(provide ;; Patterns and Projections
+         ?
 	 wildcard?
 	 ?!
 	 (struct-out capture)
-	 pattern->matcher
-	 pattern->matcher*
+
 	 matcher? ;; expensive; see implementation
 	 matcher-empty
 	 matcher-empty?
+	 pattern->matcher
+	 pattern->matcher*
 	 matcher-union
 	 matcher-intersect
 	 matcher-erase-path
@@ -25,12 +26,16 @@
 	 matcher-match-matcher
 	 matcher-append
 	 matcher-relabel
+
+	 ;; Projections
 	 compile-projection
 	 compile-projection*
 	 projection->pattern
 	 matcher-project
 	 matcher-key-set
 	 matcher-key-set/single
+
+	 ;; Printing and Serialization
 	 pretty-print-matcher
 	 matcher->jsexpr
 	 jsexpr->matcher
@@ -42,23 +47,41 @@
 	 matcher-match-matcher-unit
 	 matcher-project-success)
 
+(require racket/set)
+(require racket/match)
+(require (only-in racket/port call-with-output-string))
+(require (only-in racket/class object?))
+
+(require rackunit)
+
 ;; TODO: perhaps avoid the parameters on the fast-path, if they are
 ;; causing measurable slowdown.
 ;; TODO: should these even be parameterizable?
 
-(define matcher-union-successes (make-parameter (lambda (v1 v2)
-						  (match* (v1 v2)
-						    [(#t v) v]
-						    [(v #t) v]
-						    [(v1 v2) (set-union v1 v2)]))))
+(define matcher-union-successes
+  (make-parameter
+   (lambda (v1 v2)
+     (match* (v1 v2)
+       [(#t v) v]
+       [(v #t) v]
+       [(v1 v2) (set-union v1 v2)]))))
+
 (define matcher-intersect-successes (make-parameter set-union))
-(define matcher-erase-path-successes (make-parameter (lambda (s1 s2)
-						       (define r (set-subtract s1 s2))
-						       (if (set-empty? r) #f r))))
-(define matcher-match-matcher-successes (make-parameter (lambda (v1 v2 a)
-							  (cons (set-union (car a) v1)
-								(set-union (cdr a) v2)))))
+
+(define matcher-erase-path-successes
+  (make-parameter
+   (lambda (s1 s2)
+     (define r (set-subtract s1 s2))
+     (if (set-empty? r) #f r))))
+
+(define matcher-match-matcher-successes
+  (make-parameter
+   (lambda (v1 v2 a)
+     (cons (set-union (car a) v1)
+	   (set-union (cdr a) v2)))))
+
 (define matcher-match-matcher-unit (make-parameter (cons (set) (set))))
+
 (define matcher-project-success (make-parameter values))
 
 ;; Constructs a structure type and a singleton instance of it.
@@ -69,6 +92,18 @@
 	    #:property prop:custom-write
 	    (lambda (v port mode) (display print-representation port)))
     (define singleton-name (struct-name))))
+
+;; A Matcher is either
+;; - #f, indicating no further matches possible
+;; - (success Any), representing a successful match (if the end of
+;;   the input has been reached)
+;; - (HashTable (U Sigma Wildcard) Matcher), {TODO}
+;; - (wildcard-sequence Matcher), {TODO}
+;; If, in a hashtable matcher, a wild key is present, it is intended
+;; to catch all and ONLY those keys not otherwise present in the
+;; table.
+(struct success (value) #:transparent)
+(struct wildcard-sequence (matcher) #:transparent)
 
 ;; A Sigma is, roughly, a token in a value being matched. It is one of:
 ;;  - a struct-type, signifying the start of a struct.
@@ -105,18 +140,6 @@
 ;; projections include start-of-capture and end-of-capture elements.
 (define-singleton-struct SOC start-of-capture "{{")
 (define-singleton-struct EOC end-of-capture "}}")
-
-;; A Matcher is either
-;; - #f, indicating no further matches possible
-;; - a (success Any), representing a successful match (if the end of
-;;   the input has been reached)
-;; - a Hashtable mapping (U Sigma ?) to Matcher
-;; - a (wildcard-sequence Matcher)
-;; If, in a hashtable matcher, a wild key is present, it is intended
-;; to catch all and ONLY those keys not otherwise present in the
-;; table.
-(struct success (value) #:transparent)
-(struct wildcard-sequence (matcher) #:transparent)
 
 ;; Any -> Boolean
 ;; Predicate recognising Matchers. Expensive!
