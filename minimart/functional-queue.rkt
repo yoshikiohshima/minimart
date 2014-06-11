@@ -4,6 +4,7 @@
 	 queue?
 	 enqueue
 	 enqueue-all
+	 queue-prepare-for-dequeue
 	 dequeue
 	 list->queue
 	 queue->list
@@ -26,13 +27,13 @@
   (queue (queue-head q)
 	 (append (reverse v) (queue-tail q))))
 
-(define (shuffle q)
+(define (queue-prepare-for-dequeue q)
   (if (null? (queue-head q))
       (queue (reverse (queue-tail q)) '())
       q))
 
 (define (dequeue q)
-  (let ((q1 (shuffle q)))
+  (let ((q1 (queue-prepare-for-dequeue q)))
     (values (car (queue-head q1))
 	    (queue (cdr (queue-head q1)) (queue-tail q1)))))
 
