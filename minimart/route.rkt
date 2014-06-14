@@ -682,100 +682,71 @@
 ;; Matcher × CompiledProjection -> Matcher
 ;; The result matches a sequence of inputs of length equal to the number of captures.
 (define matcher-project
-  ;; TODO: skip-nested, capture-nested, and various cases in walk all
-  ;; share a suspicious amount of code. Refactor it away.
   (let ()
-    (define (skip-nested m k)
-      (match m
-    	[(wildcard-sequence mk) (k mk)]
-    	[(? hash?)
-    	 (for/fold [(acc (skip-nested (rlookup m ?) k))] [((key mk) (in-hash m))]
-    	   (if (eq? key ?)
-    	       acc
-    	       (matcher-union acc (cond
-    				   [(key-open? key)
-				    (skip-nested mk (lambda (mk) (skip-nested mk k)))]
-    				   [(key-close? key) (k mk)]
-    				   [else (skip-nested mk k)]))))]
-    	[_ (matcher-empty)]))
+    (define (drop-match m spec) (general-match values drop-edge drop-sigma drop-balanced m spec))
+    (define (take-match m spec) (general-match rwild  rupdate   rseq       take-balanced m spec))
 
-    (define (capture-nested m k)
-      (match m
-    	[(wildcard-sequence mk) (rwildseq (k mk))]
-    	[(? hash?)
-    	 (for/fold [(acc (rwild (capture-nested (rlookup m ?) k)))] [((key mk) (in-hash m))]
-    	   (if (eq? key ?)
-    	       acc
-    	       (cond
-    		[(key-open? key)
-    		 (rupdate acc key (capture-nested mk (lambda (mk) (capture-nested mk k))))]
-    		[(key-close? key) (rupdate acc key (k mk))]
-    		[else (rupdate acc key (capture-nested mk k))])))]
-    	[_ (matcher-empty)]))
+    (define (drop-balanced m k) (general-balanced values   values drop-edge m k))
+    (define (take-balanced m k) (general-balanced rwildseq rwild  rupdate   m k))
 
-    ;; Boolean Matcher CompiledProjection -> Matcher
-    (define (walk capturing? m spec)
-      (match spec
-	['()
-	 (when capturing? (error 'matcher-project "Bad specification: unclosed capture"))
-	 (match m
-	   [(success v) (rseq EOS (rsuccess ((matcher-project-success) v)))]
-	   [_ (matcher-empty)])]
+    (define (drop-edge acc key k) (matcher-union acc k))
+    (define (drop-sigma sigma k) k)
 
-	[(cons (== EOC) k)
-	 (when (not capturing?) (error 'matcher-project "Bad specification: unexpected EOC"))
-	 (walk #f m k)]
+    (define (general-match add-wild add-edge add-sigma balanced m spec)
+      (let walk ((m m) (spec spec))
+	(match spec
+	  ['()
+	   (match m
+	     [(success v) (rseq EOS (rsuccess ((matcher-project-success) v)))]
+	     [_ (matcher-empty)])]
 
-	[(cons (== SOC) k)
-	 (when capturing? (error 'matcher-project "Bad specification: nested capture"))
-	 (walk #t m k)]
+	  [(cons (== EOC) k) (drop-match m k)]
+	  [(cons (== SOC) k) (take-match m k)]
 
-	[(cons (== ?) k)
-	 (match m
-	   [(wildcard-sequence _)
-	    ((if capturing? rwild values) (walk capturing? m k))]
-	   [(? hash?)
-	    (if capturing?
-		(for/fold [(acc (rwild (walk capturing? (rlookup m ?) k)))]
-		    [((key mk) (in-hash m))]
-		  (if (eq? key ?)
-		      acc
-		      (cond
-		       [(key-open? key)
-			(rupdate acc key (capture-nested mk (lambda (mk)
-							      (walk capturing? mk k))))]
-		       [(key-close? key) acc]
-		       [else (rupdate acc key (walk capturing? mk k))])))
-		(for/fold [(acc (walk capturing? (rlookup m ?) k))] [((key mk) (in-hash m))]
-		  (if (eq? key ?)
-		      acc
-		      (matcher-union acc (cond
-					  [(key-open? key)
-					   (skip-nested mk (lambda (mk) (walk capturing? mk k)))]
-					  [(key-close? key) #f]
-					  [else (walk capturing? mk k)])))))]
-	   [_ (matcher-empty)])]
+	  [(cons (== ?) k)
+	   (match m
+	     [(wildcard-sequence _) (add-wild (walk m k))]
+	     [(? hash?)
+	      (for/fold [(acc (add-wild (walk (rlookup m ?) k)))] [((key mk) (in-hash m))]
+		(if (eq? key ?)
+		    acc
+		    (add-edge acc key (cond
+				       [(key-open? key) (balanced mk (lambda (mk) (walk mk k)))]
+				       [(key-close? key) #f]
+				       [else (walk mk k)]))))]
+	     [_ (matcher-empty)])]
 
-	[(cons sigma k)
-	 ((if capturing?
-	      (lambda (m1) (rseq sigma m1))
-	      values)
-	  (match m
-	    [(wildcard-sequence mk)
-	     (cond
-	      [(key-open? sigma) (walk capturing? (rwildseq m) k)]
-	      [(key-close? sigma) (walk capturing? mk k)]
-	      [else (walk capturing? m k)])]
-	    [(? hash?)
-	     (matcher-union (walk capturing? (rlookup m sigma) k)
-			    (cond
-			     [(key-open? sigma) (walk capturing? (rwildseq (rlookup m ?)) k)]
-			     [(key-close? sigma) #f]
-			     [else (walk capturing? (rlookup m ?) k)]))]
-	    [_ (matcher-empty)]))]))
+	  [(cons sigma k)
+	   (add-sigma sigma
+		      (match m
+			[(wildcard-sequence mk)
+			 (cond
+			  [(key-open? sigma) (walk (rwildseq m) k)]
+			  [(key-close? sigma) (walk mk k)]
+			  [else (walk m k)])]
+			[(? hash?)
+			 (matcher-union (walk (rlookup m sigma) k)
+					(cond
+					 [(key-open? sigma) (walk (rwildseq (rlookup m ?)) k)]
+					 [(key-close? sigma) #f]
+					 [else (walk (rlookup m ?) k)]))]
+			[_ (matcher-empty)]))])))
 
-    (lambda (m spec)
-      (walk #f m spec))))
+    (define (general-balanced add-wildseq add-wild add-edge m k)
+      (let walk ((m m) (k k))
+	(match m
+	  [(wildcard-sequence mk) (add-wildseq (k mk))]
+	  [(? hash?)
+	   (for/fold [(acc (add-wild (walk (rlookup m ?) k)))] [((key mk) (in-hash m))]
+	     (if (eq? key ?)
+		 acc
+		 (add-edge acc key (cond
+				    [(key-open? key) (walk mk (lambda (mk) (walk mk k)))]
+				    [(key-close? key) (k mk)]
+				    [else (walk mk k)]))))]
+	  [_ (matcher-empty)])))
+
+    drop-match))
 
 ;; (Listof Sigma) -> (Listof Sigma)
 ;; Hackish support for improper lists. TODO: revisit
