@@ -137,8 +137,8 @@
 ;; representing subscriptions or advertisements, projected by capture-spec.
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
   (define extract-matcher (if get-advertisements? cdr car))
-  (define level (safe-list-ref (gestalt-metalevel-ref g metalevel) level (lambda () empty-level)))
-  (define matcher (extract-matcher level))
+  (define l (safe-list-ref (gestalt-metalevel-ref g metalevel) level (lambda () empty-level)))
+  (define matcher (extract-matcher l))
   (if (equal? capture-spec capture-everything-projection) ;; efficiency hack. Avoid projecting by identity
       matcher
       (matcher-project matcher capture-spec)))
