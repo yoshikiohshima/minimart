@@ -127,21 +127,13 @@
 (define (compile-gestalt-projection . specs)
   (compile-gestalt-projection* specs))
 
-;; CompiledProjection
-;; Represents a projection that simply captures the entirety of the
-;; projected matcher; useful as an identity projection.
-(define capture-everything-projection (compile-gestalt-projection (?!)))
-
 ;; Gestalt × Natural × Natural × Boolean × CompiledProjection → Matcher
 ;; Retrieves the Matcher within g at the given metalevel and level,
 ;; representing subscriptions or advertisements, projected by capture-spec.
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
   (define extract-matcher (if get-advertisements? cdr car))
   (define l (safe-list-ref (gestalt-metalevel-ref g metalevel) level (lambda () empty-level)))
-  (define matcher (extract-matcher l))
-  (if (equal? capture-spec capture-everything-projection) ;; efficiency hack. Avoid projecting by identity
-      matcher
-      (matcher-project matcher capture-spec)))
+  (matcher-project (extract-matcher l) capture-spec))
 
 ;; Gestalt -> Gestalt
 ;; Discards the 0th metalevel, renumbering others appropriately.
