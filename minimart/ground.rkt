@@ -48,7 +48,7 @@
   ;; In principle, security restrictions should make it impossible.
   ;; But absent those, what should be done? Should an offending
   ;; process be identified and terminated?
-  (when (not es) (error 'extract-active-events "User program subscribed to wildcard event"))
+  (unless es (error 'extract-active-events "User program subscribed to wildcard event"))
   (for/list [(ev (in-set es))]
     (match-define (list e) ev)
     (event-handler e)))

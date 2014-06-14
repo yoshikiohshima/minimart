@@ -105,14 +105,17 @@
 ;; Only adds to its second argument if its first is nonempty.
 (define cons-metalevel (guarded-cons empty-metalevel))
 
+;; Gestalt Nat -> Metalevel
+(define (gestalt-metalevel-ref g n)
+  (safe-list-ref (gestalt-metalevels g) n (lambda () empty-metalevel)))
+
 ;; Gestalt × Value × Natural × Boolean → (Setof PID)
 ;; Retrieves those PIDs that have active subscriptions/advertisements
 ;; covering the given message at the given metalevel.
 (define (gestalt-match-value g body metalevel is-feedback?)
-  (define levels (safe-list-ref (gestalt-metalevels g) metalevel (lambda () empty-metalevel)))
-  (for/fold [(acc (set))] [(level (in-list levels))]
-    (define matcher ((if is-feedback? cdr car) level)) ;; feedback targets advertisers/publishers
-    (set-union (matcher-match-value matcher body) acc)))
+  (define extract-matcher (if is-feedback? cdr car)) ;; feedback targets advertisers/publishers
+  (define (pids-at level) (matcher-match-value (extract-matcher level) body))
+  (apply set-union (map pids-at (gestalt-metalevel-ref g metalevel))))
 
 ;; (Listof Projection) -> CompiledProjection
 ;; For use with gestalt-project.
@@ -133,10 +136,10 @@
 ;; Retrieves the Matcher within g at the given metalevel and level,
 ;; representing subscriptions or advertisements, projected by capture-spec.
 (define (gestalt-project g metalevel level get-advertisements? capture-spec)
-  (define levels (safe-list-ref (gestalt-metalevels g) metalevel (lambda () empty-metalevel)))
-  (define matcher ((if get-advertisements? cdr car)
-		   (safe-list-ref levels level (lambda () empty-level))))
-  (if (equal? capture-spec capture-everything-projection)
+  (define extract-matcher (if get-advertisements? cdr car))
+  (define level (safe-list-ref (gestalt-metalevel-ref g metalevel) level (lambda () empty-level)))
+  (define matcher (extract-matcher level))
+  (if (equal? capture-spec capture-everything-projection) ;; efficiency hack. Avoid projecting by identity
       matcher
       (matcher-project matcher capture-spec)))
 
@@ -165,9 +168,8 @@
 ;; Gestalts.
 (define (simple-gestalt is-adv? p level metalevel)
   (define m (pattern->matcher #t p))
-  (gestalt (prepend metalevel empty-metalevel
-		    (list (prepend level empty-level
-				   (list (if is-adv? (cons #f m) (cons m #f))))))))
+  (define pom (if is-adv? (cons #f m) (cons m #f)))
+  (gestalt (prepend metalevel empty-metalevel (list (prepend level empty-level (list pom))))))
 
 ;; -> Gestalt
 ;; The empty gestalt.
@@ -178,9 +180,8 @@
 ;; TODO: our invariants should ensure that (gestalt-empty? g) iff (equal? g (gestalt '())).
 ;;       Make sure this actually is true.
 (define (gestalt-empty? g)
-  (andmap (lambda (ml)
-	    (andmap (lambda (l) (and (matcher-empty? (car l)) (matcher-empty? (cdr l)))) ml))
-	  (gestalt-metalevels g)))
+  (for*/and [(ml (in-list (gestalt-metalevels g))) (l (in-list ml))]
+    (and (matcher-empty? (car l)) (matcher-empty? (cdr l)))))
 
 ;; map-zip: ((U 'right-longer 'left-longer) (Listof X) -> (Listof Y))
 ;;          (X X -> Y)
@@ -235,8 +236,11 @@
 ;; Computes the union of its arguments.
 (define (gestalt-union1 g1 g2) (gestalt-combine-straight g1 g2 (lambda (side x) x) matcher-union))
 
+;; TODO: abstract out the folding skeletons of gestalt-filter and gestalt-match.
+
 ;; Gestalt Gestalt -> Gestalt
 ;; View on g1 from g2's perspective.
+;; Implements the "(p)_n || <p>_m if n < m" part of NC.
 (define gestalt-filter
   (let ()
     (define (filter-metalevels mls1 mls2)

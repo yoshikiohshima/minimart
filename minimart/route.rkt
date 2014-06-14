@@ -8,6 +8,8 @@
 ;; TODO: rename to matcher.rkt or similar.
 ;; TODO: Ontology
 
+;; TODO: (generally) interpretations for data definitions
+
 (provide ;; Patterns and Projections
          ?
 	 wildcard?
@@ -82,6 +84,7 @@
 
 (define matcher-match-matcher-unit (make-parameter (cons (set) (set))))
 
+;; The project-success function should return #f to signal "no success values".
 (define matcher-project-success (make-parameter values))
 
 ;; Constructs a structure type and a singleton instance of it.
@@ -665,23 +668,19 @@
 (define (projection->pattern p)
   (let walk ((p p))
     (match p
-      [(capture sub) (walk sub)] ;; TODO: maybe enforce non-nesting here too?
+      [(capture sub) sub] ;; TODO: maybe enforce non-nesting here too?
       [(cons p1 p2) (cons (walk p1) (walk p2))]
       [(? vector? v) (for/vector [(e (in-vector v))] (walk e))]
-      [(embedded-matcher _) p]
       [(? non-object-struct?)
-       (define-values (t skipped?) (struct-info p))
-       (when skipped? (error 'projection->pattern "Cannot reflect on struct instance ~v" p))
-       (define fs (cdr (vector->list (struct->vector p))))
-       (apply (struct-type-make-constructor t) (map walk fs))]
+       (apply (struct-type-make-constructor (struct->struct-type p))
+	      (map walk (cdr (vector->list (struct->vector p)))))]
       ;; TODO: consider options for treating hash tables as compounds
       ;; rather than (useless) atoms
       [(? hash?) (error 'projection->pattern "Cannot match on hash tables at present")]
       [other other])))
 
-;; Matcher × CompiledProjection [× (Value -> (Option Value))] → Matcher
+;; Matcher × CompiledProjection -> Matcher
 ;; The result matches a sequence of inputs of length equal to the number of captures.
-;; The project-success function should return #f to signal "no success values".
 (define matcher-project
   ;; TODO: skip-nested, capture-nested, and various cases in walk all
   ;; share a suspicious amount of code. Refactor it away.
@@ -714,6 +713,7 @@
     		[else (rupdate acc key (capture-nested mk k))])))]
     	[_ (matcher-empty)]))
 
+    ;; Boolean Matcher CompiledProjection -> Matcher
     (define (walk capturing? m spec)
       (match spec
 	['()
