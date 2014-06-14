@@ -115,7 +115,7 @@
 (define (gestalt-match-value g body metalevel is-feedback?)
   (define extract-matcher (if is-feedback? cdr car)) ;; feedback targets advertisers/publishers
   (define (pids-at level) (matcher-match-value (extract-matcher level) body))
-  (apply set-union (map pids-at (gestalt-metalevel-ref g metalevel))))
+  (apply set-union (set) (map pids-at (gestalt-metalevel-ref g metalevel))))
 
 ;; (Listof Projection) -> CompiledProjection
 ;; For use with gestalt-project.
