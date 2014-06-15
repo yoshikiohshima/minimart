@@ -28,7 +28,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Ground-level communication messages
 
-(struct websocket-accepted (id connection control-ch) #:prefab)
+(struct websocket-accepted (id server-addr connection control-ch) #:prefab)
 (struct websocket-incoming-message (id message) #:prefab)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -54,16 +54,16 @@
 	 (begin (when shutdown-procedure (shutdown-procedure))
 		(transition (struct-copy listener-state state [shutdown-procedure #f]) (quit)))
 	 #f)]
-    [(message (websocket-accepted id c control-ch) 1 #f)
+    [(message (websocket-accepted id _ c control-ch) 1 #f)
      (transition state
 		 (spawn-connection (listener-state-server-addr state) id c control-ch))]
     [_ #f]))
 
-(define (connection-handler c dummy-state)
+(define ((connection-handler server-addr) c dummy-state)
   (define control-ch (make-channel))
   (define c-input-port (ws-conn-base-ip c))
   (define id (gensym 'ws))
-  (send-ground-message (websocket-accepted id c control-ch))
+  (send-ground-message (websocket-accepted id server-addr c control-ch))
   (let loop ((blocked? #t))
     (sync (handle-evt control-ch
 		      (match-lambda
@@ -92,11 +92,11 @@
 				       #:tcp@ (if ssl-options
 						  (ssl-options->ssl-tcp@ ssl-options)
 						  tcp@)
-				       connection-handler))
+				       (connection-handler server-addr)))
   (spawn websocket-listener
 	 (listener-state shutdown-procedure server-addr)
 	 (gestalt-union (pub (websocket-message ? server-addr ?) #:level 2)
-			(sub (websocket-accepted ? ? ?) #:meta-level 1))))
+			(sub (websocket-accepted ? server-addr ? ?) #:meta-level 1))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Connection
