@@ -411,19 +411,19 @@
 	    (w (struct-copy world w
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
-       (log-info "Spawned process ~a ~v ~v"
-		 (cons new-pid (pid-stack))
-		 (process-behavior new-p)
-		 (process-state new-p))
+       ;; (log-info "Spawned process ~a ~v ~v"
+       ;; 		 (cons new-pid (pid-stack))
+       ;; 		 (process-behavior new-p)
+       ;; 		 (process-state new-p))
        (apply-and-issue-routing-update w (gestalt-empty) new-gestalt new-pid))]
     [(quit)
      (define pt (world-process-table w))
      (define p (hash-ref pt pid (lambda () #f)))
      (if p
 	 (let* ((w (struct-copy world w [process-table (hash-remove pt pid)])))
-	   (log-info "Process ~a terminating; ~a processes remain"
-		     (cons pid (pid-stack))
-		     (hash-count (world-process-table w)))
+	   ;; (log-info "Process ~a terminating; ~a processes remain"
+	   ;; 	     (cons pid (pid-stack))
+	   ;; 	     (hash-count (world-process-table w)))
 	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) #f))
 	 (transition w '()))]
     [(routing-update gestalt)
