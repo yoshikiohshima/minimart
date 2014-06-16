@@ -282,7 +282,7 @@
 (define (deliver-event e pid p)
   (parameterize ((pid-stack (cons pid (pid-stack))))
     (when (and (log-events-and-actions?) e)
-      (log-info "~a: ~v --> ~v ~v"
+      (log-info "EVENT ~a: ~v --> ~v ~v"
 		(pid-stack)
 		e
 		(process-behavior p)
@@ -322,7 +322,7 @@
 				  (lambda (p)
 				    (when (and (log-events-and-actions?)
 					       (not (null? (flatten new-actions))))
-				      (log-info "~a: ~v <-- ~v ~v"
+				      (log-info "ACTIONS ~a: ~v <-- ~v ~v"
 						(cons pid (pid-stack))
 						new-actions
 						(process-behavior p)
