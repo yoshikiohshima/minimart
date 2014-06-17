@@ -380,10 +380,18 @@
 ;; Matcher Matcher -> Matcher
 ;; Removes re2's mappings from re1. Assumes re2 has previously been union'd into re1.
 ;; The combine-successes function should return #f to signal "no remaining success values".
-(define matcher-erase-path
+(define (matcher-erase-path original1 original2)
   (let ()
     (define (cofinite-pattern)
-      (error 'matcher-erase-path "Cofinite pattern required"))
+      (error 'matcher-erase-path "Cofinite pattern required subtracting:\n     ~a\nfrom ~a"
+	     (matcher->pretty-string original2 #:indent 5)
+	     (matcher->pretty-string original1 #:indent 5)))
+    (define (erase-path r1 r2)
+      (match* (r1 r2)
+	[(#f #f) #f]
+	[(r #f) r]
+	[(#f r) (cofinite-pattern)]
+	[(r1 r2) (walk r1 r2)]))
     (define (walk path aggregate)
       (match* (path aggregate)
 	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
@@ -393,11 +401,7 @@
 	[((? hash? h1) (? hash? h2))
 	 (define w1 (rlookup h1 ?))
 	 (define w2 (rlookup h2 ?))
-	 (define w (match* (w1 w2)
-		     [(#f #f) #f]
-		     [(r #f) r]
-		     [(#f r) (cofinite-pattern)]
-		     [(r1 r2) (walk r1 r2)]))
+	 (define w (erase-path w1 w2))
 	 (define (examine-key acc key)
 	   (define updated-k (match* ((rlookup h1 key) (rlookup h2 key))
 			       [(#f #f) #f]
@@ -437,11 +441,7 @@
 				 k)]
 	   [else (walk k w)])
 	  k))
-    (lambda (re1 re2)
-      (match* (re1 re2)
-	[(r #f) r]
-	[(#f r) (cofinite-pattern)]
-	[(r1 r2) (walk r1 r2)]))))
+    (erase-path original1 original2)))
 
 ;; Matcher -> Matcher
 ;; Checks for redundant branches in its argument: when a matcher
