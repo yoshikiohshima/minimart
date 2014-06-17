@@ -39,6 +39,7 @@
 
 	 ;; Printing and Serialization
 	 pretty-print-matcher
+	 matcher->pretty-string
 	 matcher->jsexpr
 	 jsexpr->matcher
 
@@ -51,7 +52,7 @@
 
 (require racket/set)
 (require racket/match)
-(require (only-in racket/port call-with-output-string))
+(require (only-in racket/port call-with-output-string with-output-to-string))
 (require (only-in racket/class object?))
 
 (require rackunit)
@@ -868,6 +869,9 @@
   (walk initial-indent m)
   (newline port)
   m)
+
+(define (matcher->pretty-string m #:indent [initial-indent 0])
+  (with-output-to-string (lambda () (pretty-print-matcher m #:indent initial-indent))))
 
 ;; Matcher (Value -> JSExpr) -> JSExpr
 ;; Serializes a matcher to a JSON expression.
