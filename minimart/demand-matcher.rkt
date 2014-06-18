@@ -10,7 +10,8 @@
 (provide (except-out (struct-out demand-matcher) demand-matcher)
 	 (rename-out [make-demand-matcher demand-matcher])
 	 demand-matcher-update
-	 spawn-demand-matcher)
+	 spawn-demand-matcher
+	 on-gestalt)
 
 ;; A DemandMatcher keeps track of demand for services based on some
 ;; Projection over a Gestalt, as well as a collection of functions
@@ -114,3 +115,35 @@
 	 d
 	 (gestalt-union (sub observer-pattern #:meta-level meta-level #:level observer-level)
 			(pub observer-pattern #:meta-level meta-level #:level observer-level))))
+
+;; (Gestalt (Option (Setof (Listof Value))) ... -> (Option (Constreeof Action)))
+;;    Gestalt GestaltProjection ...
+;; -> Action
+;; Spawns a process that observes the given projections. Any time the
+;; environment's gestalt changes in a relevant way, calls
+;; check-and-maybe-spawn-fn with the aggregate gestalt and the
+;; projection results. If check-and-maybe-spawn-fn returns #f,
+;; continues to wait; otherwise, takes the action(s) returned, and
+;; quits.
+(define (on-gestalt check-and-maybe-spawn-fn
+		    base-gestalt
+		    . gestalt-projections)
+  (define aggregate-gestalt
+    (apply gestalt-union
+	   base-gestalt
+	   (map projection->gestalt gestalt-projections)))
+  (spawn (lambda (e s)
+	   (match e
+	     [(routing-update g)
+	      (define projection-results
+		(map (lambda (p) (gestalt-project/keys g p)) gestalt-projections))
+	      (define maybe-spawn (apply check-and-maybe-spawn-fn
+					 aggregate-gestalt
+					 projection-results))
+	      (and maybe-spawn
+		   (transition s
+			       (list maybe-spawn
+				     (quit))))]
+	     [_ #f]))
+	 (void)
+	 aggregate-gestalt))
