@@ -859,10 +859,12 @@
 	     (d " ")
 	     (define keystr (call-with-output-string
 			     (lambda (p)
-			       (if (struct-type? key)
-				   (begin (display "<s:" p)
-					  (display (struct-type-name key) p))
-				   (display key p)))))
+			       (cond
+				[(struct-type? key)
+				 (display "<s:" p)
+				 (display (struct-type-name key) p)]
+				[else
+				 (write key p)]))))
 	     (d keystr)
 	     (walk (+ i 1 (string-length keystr)) k)
 	     #t))]))
