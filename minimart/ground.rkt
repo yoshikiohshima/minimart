@@ -35,23 +35,21 @@
 (define (event-handler descriptor)
   (handle-evt descriptor (lambda vs (send (event descriptor vs)))))
 
-;; CompiledProjection
+;; GestaltProjection
 ;; Used to extract event descriptors and results from subscriptions
 ;; from the ground VM's contained World.
-(define event-projection (compile-gestalt-projection (event (?!) ?)))
+(define event-projection (project-subs (event (?!) ?)))
 
 ;; Gestalt -> (Listof RacketEvent)
 ;; Projects out the active event subscriptions from the given gestalt.
 (define (extract-active-events gestalt)
-  (define es (matcher-key-set (gestalt-project gestalt 0 0 #f event-projection)))
+  (define es (gestalt-project/single gestalt event-projection))
   ;; TODO: how should the following error be handled, ideally?
   ;; In principle, security restrictions should make it impossible.
   ;; But absent those, what should be done? Should an offending
   ;; process be identified and terminated?
   (unless es (error 'extract-active-events "User program subscribed to wildcard event"))
-  (for/list [(ev (in-set es))]
-    (match-define (list e) ev)
-    (event-handler e)))
+  (for/list [(e (in-set es))] (event-handler e)))
 
 ;; RacketEvent
 ;; Used only when the system is not provably inert, in order to let it

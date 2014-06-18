@@ -22,10 +22,9 @@
 	 (struct-out capture)
 	 pretty-print-matcher
 	 matcher->pretty-string
-	 matcher-key-set
-	 matcher-key-set/single
-	 projection->pattern
 	 matcher-empty?
+	 (rename-out [projection->pattern matcher-projection->pattern]
+		     [compile-projection compile-matcher-projection])
 
 	 sub
 	 pub

@@ -5,6 +5,7 @@
 (require racket/match)
 (require "core.rkt")
 (require "gestalt.rkt")
+(require (only-in "route.rkt" matcher-key-set))
 
 (provide (except-out (struct-out demand-matcher) demand-matcher)
 	 (rename-out [make-demand-matcher demand-matcher])
@@ -48,8 +49,8 @@
 			     increase-handler		;; ChangeHandler
 			     [decrease-handler default-decrease-handler]) ;; ChangeHandler
   (demand-matcher demand-is-subscription?
-		  (projection->pattern projection)
-		  (compile-gestalt-projection projection)
+		  (matcher-projection->pattern projection)
+		  (compile-matcher-projection projection)
 		  meta-level
 		  demand-level
 		  supply-level
@@ -65,8 +66,8 @@
 ;; demanded supply.
 (define (demand-matcher-update d s g)
   (match-define (demand-matcher demand-is-sub? _ spec ml dl sl inc-h dec-h old-demand old-supply) d)
-  (define new-demand (matcher-key-set (gestalt-project g ml dl (not demand-is-sub?) spec)))
-  (define new-supply (matcher-key-set (gestalt-project g ml sl demand-is-sub? spec)))
+  (define new-demand (matcher-key-set (gestalt-project* g ml dl (not demand-is-sub?) spec)))
+  (define new-supply (matcher-key-set (gestalt-project* g ml sl demand-is-sub? spec)))
   (define demand+ (set-subtract (set-subtract new-demand old-demand) new-supply))
   (define supply- (set-intersect (set-subtract old-supply new-supply) new-demand))
   (define new-d (struct-copy demand-matcher d

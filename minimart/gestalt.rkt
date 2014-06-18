@@ -9,9 +9,16 @@
 
 (provide (struct-out gestalt)
 	 gestalt-match-value
-	 compile-gestalt-projection
-	 compile-gestalt-projection*
+
+	 project-subs
+	 project-pubs
+	 projection?
+	 projection->gestalt
+	 gestalt-project*
 	 gestalt-project
+	 gestalt-project/keys
+	 gestalt-project/single
+
 	 drop-gestalt
 	 lift-gestalt
 	 simple-gestalt
@@ -67,6 +74,10 @@
 ;; Convention: A GestaltSet is a Gestalt where the Matchers map to #t
 ;; instead of (NonemptySetof PID) or any other value.
 
+;; A GestaltProjection is a single-metalevel, single-level fragment of
+;; a gestalt with capture-groups. See matcher-project in route.rkt.
+(struct projection (metalevel level get-advertisements? spec compiled) #:transparent)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; (Listof X) Nat [-> X] -> X
@@ -117,23 +128,47 @@
   (define (pids-at level) (matcher-match-value (extract-matcher level) body))
   (apply set-union (set) (map pids-at (gestalt-metalevel-ref g metalevel))))
 
-;; (Listof Projection) -> CompiledProjection
-;; For use with gestalt-project.
-(define (compile-gestalt-projection* specs)
-  (compile-projection* specs))
+;; project-subs : Projection [#:meta-level Nat] [#:level Nat] -> GestaltProjection
+;; project-pubs : Projection [#:meta-level Nat] [#:level Nat] -> GestaltProjection
+;;
+;; Construct projectors representing subscriptions/advertisements
+;; matching the given pattern, at the given meta-level and level.
+;; Used with gestalt-project.
+(define (project-subs p #:meta-level [ml 0] #:level [l 0])
+  (projection ml l #f p (compile-projection p)))
+(define (project-pubs p #:meta-level [ml 0] #:level [l 0])
+  (projection ml l #t p (compile-projection p)))
 
-;; Projection* -> CompiledProjection
-;; For use with gestalt-project.
-(define (compile-gestalt-projection . specs)
-  (compile-gestalt-projection* specs))
+;; GestaltProjection -> Gestalt
+;; Converts a projection to an atomic unit of gestalt.
+(define (projection->gestalt pr)
+  (simple-gestalt (not (projection-get-advertisements? pr))
+		  (projection->pattern (projection-spec pr))
+		  (projection-level pr)
+		  (projection-metalevel pr)))
 
-;; Gestalt × Natural × Natural × Boolean × CompiledProjection → Matcher
-;; Retrieves the Matcher within g at the given metalevel and level,
-;; representing subscriptions or advertisements, projected by capture-spec.
-(define (gestalt-project g metalevel level get-advertisements? capture-spec)
+;; Gestalt × Nat × Nat × Boolean × CompiledProjection → Matcher
+;; Retrieves the Matcher within g projected by the arguments.
+(define (gestalt-project* g metalevel level get-advertisements? capture-spec)
   (define extract-matcher (if get-advertisements? cdr car))
   (define l (safe-list-ref (gestalt-metalevel-ref g metalevel) level (lambda () empty-level)))
   (matcher-project (extract-matcher l) capture-spec))
+
+;; Gestalt × GestaltProjection → Matcher
+;; Retrieves the Matcher within g projected by pr.
+(define (gestalt-project g pr)
+  (match-define (projection metalevel level get-advertisements? _ capture-spec) pr)
+  (gestalt-project* g metalevel level get-advertisements? capture-spec))
+
+;; Gestalt × GestaltProjection → (Option (Setof (Listof Value)))
+;; Projects g with pr and calls matcher-key-set on the result.
+(define (gestalt-project/keys g pr)
+  (matcher-key-set (gestalt-project g pr)))
+
+;; Gestalt × GestaltProjection → (Option (Setof Value))
+;; Projects g with pr and calls matcher-key-set/single on the result.
+(define (gestalt-project/single g pr)
+  (matcher-key-set/single (gestalt-project g pr)))
 
 ;; Gestalt -> Gestalt
 ;; Discards the 0th metalevel, renumbering others appropriately.

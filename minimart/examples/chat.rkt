@@ -7,8 +7,8 @@
 
 (define (spawn-session them us)
   (define user (gensym 'user))
-  (define remote-detector (compile-gestalt-projection (?!)))
-  (define peer-detector (compile-gestalt-projection `(,(?!) says ,?)))
+  (define remote-detector (project-pubs #:meta-level 1 (?!)))
+  (define peer-detector (project-pubs `(,(?!) says ,?)))
   (define (send-to-remote fmt . vs)
     (send #:meta-level 1 (tcp-channel us them (string->bytes/utf-8 (apply format fmt vs)))))
   (define (say who fmt . vs)
@@ -23,11 +23,10 @@
 		   [(message `(,who says ,what) 0 #f)
 		    (transition old-peers (say who "says: ~a" what))]
 		   [(routing-update g)
-		    (define new-peers
-		      (matcher-key-set/single (gestalt-project g 0 0 #t peer-detector)))
+		    (define new-peers (gestalt-project/single g peer-detector))
 		    (transition
 		     new-peers
-		     (list (when (matcher-empty? (gestalt-project g 1 0 #t remote-detector)) (quit))
+		     (list (when (matcher-empty? (gestalt-project g remote-detector)) (quit))
 			   (for/list [(who (set-subtract new-peers old-peers))]
 			     (say who "arrived."))
 			   (for/list [(who (set-subtract old-peers new-peers))]

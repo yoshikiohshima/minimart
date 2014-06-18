@@ -19,9 +19,7 @@
 				     (sub (tcp-channel them us ?) #:meta-level 1 #:level 1)
 				     (sub (tcp-channel them us ?) #:meta-level 1)))
 
-  (define (gestalt->peers g)
-    (matcher-key-set/single
-     (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
+  (define (gestalt->peers g) (gestalt-project/single g (project-pubs `(,(?!) says ,?))))
 
   (userland-thread #:gestalt (gestalt-union tcp-gestalt
 					    (sub `(,? says ,?))

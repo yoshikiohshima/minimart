@@ -43,9 +43,7 @@
 	(loop old-peers)]
        [(routing-update g)
 	(when (gestalt-empty? (gestalt-filter g tcp-gestalt)) (do (quit)))
-	(define new-peers
-	  (matcher-key-set/single
-	   (gestalt-project g 0 0 #t (compile-gestalt-projection `(,(?!) says ,?)))))
+	(define new-peers (gestalt-project/single g (project-pubs `(,(?!) says ,?))))
 	(for/list [(who (set-subtract new-peers old-peers))] (say who "arrived."))
 	(for/list [(who (set-subtract old-peers new-peers))] (say who "departed."))
 	(loop new-peers)]))))
