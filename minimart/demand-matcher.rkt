@@ -6,6 +6,7 @@
 (require "core.rkt")
 (require "gestalt.rkt")
 (require (only-in "route.rkt" matcher-key-set))
+(require "drivers/timer.rkt")
 
 (provide (except-out (struct-out demand-matcher) demand-matcher)
 	 (rename-out [make-demand-matcher demand-matcher])
@@ -125,25 +126,30 @@
 ;; projection results. If check-and-maybe-spawn-fn returns #f,
 ;; continues to wait; otherwise, takes the action(s) returned, and
 ;; quits.
-(define (on-gestalt check-and-maybe-spawn-fn
+(define (on-gestalt #:timeout-msec [timeout-msec #f]
+		    #:on-timeout [timeout-handler (lambda () '())]
+		    check-and-maybe-spawn-fn
 		    base-gestalt
 		    . gestalt-projections)
+  (define timer-id (gensym 'on-gestalt))
   (define aggregate-gestalt
     (apply gestalt-union
 	   base-gestalt
 	   (map projection->gestalt gestalt-projections)))
-  (spawn (lambda (e s)
-	   (match e
-	     [(routing-update g)
-	      (define projection-results
-		(map (lambda (p) (gestalt-project/keys g p)) gestalt-projections))
-	      (define maybe-spawn (apply check-and-maybe-spawn-fn
-					 aggregate-gestalt
-					 projection-results))
-	      (and maybe-spawn
-		   (transition s
-			       (list maybe-spawn
-				     (quit))))]
-	     [_ #f]))
-	 (void)
-	 aggregate-gestalt))
+  (list
+   (when timeout-msec (send (set-timer timer-id timeout-msec 'relative)))
+   (spawn (lambda (e s)
+	    (match e
+	      [(routing-update g)
+	       (define projection-results
+		 (map (lambda (p) (gestalt-project/keys g p)) gestalt-projections))
+	       (define maybe-spawn (apply check-and-maybe-spawn-fn
+					  aggregate-gestalt
+					  projection-results))
+	       (transition s (when maybe-spawn (list maybe-spawn (quit))))]
+	      [(message (timer-expired _ _) _ _)
+	       (transition s (list (timeout-handler) (quit)))]
+	      [_ #f]))
+	  (void)
+	  (gestalt-union aggregate-gestalt
+			 (sub (timer-expired timer-id ?))))))
