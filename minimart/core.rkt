@@ -366,8 +366,11 @@
 ;; World -> World
 ;; Updates the World's cached copy of the union of its partial- and downward-gestalts.
 (define (update-full-gestalt w)
-  (struct-copy world w [full-gestalt
-			(gestalt-union (world-partial-gestalt w) (world-downward-gestalt w))]))
+  (define new-full-gestalt (gestalt-union (world-partial-gestalt w) (world-downward-gestalt w)))
+  ;; (log-info "World ~a new full gestalt:\n~a"
+  ;; 	    (pid-stack)
+  ;; 	    (gestalt->pretty-string new-full-gestalt))
+  (struct-copy world w [full-gestalt new-full-gestalt]))
 
 ;; World Gestalt (Option PID) -> World
 ;; Constructs and enqueues a PendingEvent describing a change to the
