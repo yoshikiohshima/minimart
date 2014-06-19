@@ -70,6 +70,20 @@
   (match-define (demand-matcher demand-is-sub? _ spec ml dl sl inc-h dec-h old-demand old-supply) d)
   (define new-demand (matcher-key-set (gestalt-project* g ml dl (not demand-is-sub?) spec)))
   (define new-supply (matcher-key-set (gestalt-project* g ml sl demand-is-sub? spec)))
+  (when (not new-demand)
+    (error 'demand-matcher "Wildcard demand of ~a ~v at metalevel ~a, level ~a:\n~a"
+	   (if demand-is-sub? "subs" "advs")
+	   (demand-matcher-pattern d)
+	   ml
+	   dl
+	   (gestalt->pretty-string g)))
+  (when (not new-supply)
+    (error 'demand-matcher "Wildcard supply of ~a ~v at metalevel ~a, level ~a:\n~a"
+	   (if demand-is-sub? "advs" "subs")
+	   (demand-matcher-pattern d)
+	   ml
+	   sl
+	   (gestalt->pretty-string g)))
   (define demand+ (set-subtract (set-subtract new-demand old-demand) new-supply))
   (define supply- (set-intersect (set-subtract old-supply new-supply) new-demand))
   (define new-d (struct-copy demand-matcher d
