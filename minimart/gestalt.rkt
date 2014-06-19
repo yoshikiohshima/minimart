@@ -13,6 +13,7 @@
 	 project-subs
 	 project-pubs
 	 projection?
+	 projection-spec
 	 projection->gestalt
 	 gestalt-project*
 	 gestalt-project
@@ -140,11 +141,12 @@
   (projection ml l #t p (compile-projection p)))
 
 ;; GestaltProjection -> Gestalt
-;; Converts a projection to an atomic unit of gestalt.
+;; Converts a projection to an atomic unit of gestalt that will detect
+;; things extractable by the projection.
 (define (projection->gestalt pr)
   (simple-gestalt (not (projection-get-advertisements? pr))
 		  (projection->pattern (projection-spec pr))
-		  (projection-level pr)
+		  (+ (projection-level pr) 1)
 		  (projection-metalevel pr)))
 
 ;; Gestalt × Nat × Nat × Boolean × CompiledProjection → Matcher

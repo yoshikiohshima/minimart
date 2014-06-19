@@ -236,6 +236,7 @@
   ;; acc is the continuation-matcher for the matcher created from p.
   (define (walk p acc)
     (match p
+      [(capture sub) (error 'pattern->matcher* "Embedded capture in one of the patterns ~v" ps0)]
       [(== ?) (rwild acc)]
       [(cons p1 p2) (rseq SOL (walk p1 (walk-pair-chain p2 acc)))]
       [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
