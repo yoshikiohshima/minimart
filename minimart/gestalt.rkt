@@ -165,12 +165,24 @@
 ;; Gestalt × GestaltProjection → (Option (Setof (Listof Value)))
 ;; Projects g with pr and calls matcher-key-set on the result.
 (define (gestalt-project/keys g pr)
-  (matcher-key-set (gestalt-project g pr)))
+  (check-projection-result g pr (matcher-key-set (gestalt-project g pr))))
 
 ;; Gestalt × GestaltProjection → (Option (Setof Value))
 ;; Projects g with pr and calls matcher-key-set/single on the result.
 (define (gestalt-project/single g pr)
-  (matcher-key-set/single (gestalt-project g pr)))
+  (check-projection-result g pr (matcher-key-set/single (gestalt-project g pr))))
+
+;; Gestalt × GestaltProjection × (Option A) → (Option A)
+(define (check-projection-result g pr result)
+  (when (not result)
+    (match-define (projection metalevel level get-advertisements? spec _) pr)
+    (log-warning "Wildcard detected projecting ~a at metalevel ~a, level ~a\nwith pattern ~v from gestalt:\n~a"
+		 (if get-advertisements? "advs" "subs")
+		 metalevel
+		 level
+		 spec
+		 (gestalt->pretty-string g)))
+  result)
 
 ;; Gestalt -> Gestalt
 ;; Discards the 0th metalevel, renumbering others appropriately.
