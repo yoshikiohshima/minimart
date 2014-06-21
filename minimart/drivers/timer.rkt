@@ -19,15 +19,41 @@
 (struct set-timer (label msecs kind) #:prefab)
 (struct timer-expired (label msecs) #:prefab)
 
-(struct driver-state (heap) #:transparent)
+(define (spawn-timer-driver)
+  (define control-ch (make-channel))
+  (thread (lambda () (timer-driver-thread-main control-ch)))
+  (spawn timer-driver control-ch (gestalt-union (sub (set-timer ? ? 'relative))
+						(sub (set-timer ? ? 'absolute))
+						(pub (timer-expired ? ?))
+						(sub (timer-expired ? ?) #:meta-level 1))))
 
-;; Racket's alarm-evt is almost the right design for timeouts: its
-;; synchronisation value should be the (or some) value of the clock
-;; after the asked-for time. That way it serves as timeout and
-;; clock-reader in one.
-(define (timer-evt msecs)
-  (handle-evt (alarm-evt msecs)
-	      (lambda (_) (current-inexact-milliseconds))))
+(define (timer-driver e control-ch)
+  (match e
+    [(message (? timer-expired? expiry) 1 #f)
+     (transition control-ch (send expiry))]
+    [(message (? set-timer? instruction) 0 #f)
+     (channel-put control-ch instruction)
+     #f]
+    [_ #f]))
+
+(define (timer-driver-thread-main control-ch)
+  (define heap (make-timer-heap))
+  (let loop ()
+    (sync (match (next-timer heap)
+	    [#f never-evt]
+	    [t (handle-evt (timer-evt (pending-timer-deadline t))
+			   (lambda (now)
+			     (for-each send-ground-message (fire-timers! heap now))
+			     (loop)))])
+	  (handle-evt control-ch
+		      (match-lambda
+		       [(set-timer label msecs 'relative)
+			(install-timer! heap label (+ (current-inexact-milliseconds) msecs))
+			(loop)]
+		       [(set-timer label msecs 'absolute)
+			(install-timer! heap label msecs)
+			(loop)]
+		       ['quit (void)])))))
 
 (define (make-timer-heap)
   (make-heap (lambda (t1 t2) (<= (pending-timer-deadline t1) (pending-timer-deadline t2)))))
@@ -42,38 +68,18 @@
       (let ((m (heap-min heap)))
 	(if (<= (pending-timer-deadline m) now)
 	    (begin (heap-remove-min! heap)
-		   (cons (send (timer-expired (pending-timer-label m) now))
+		   (cons (timer-expired (pending-timer-label m) now)
 			 (fire-timers! heap now)))
 	    '()))))
 
-(define (timer-subscriptions s)
-  (define t (next-timer (driver-state-heap s)))
-  (gestalt-union (sub (set-timer ? ? 'relative))
-		 (sub (set-timer ? ? 'absolute))
-		 (pub (timer-expired ? ?))
-		 (if t
-		     (sub (event (timer-evt (pending-timer-deadline t)) ?) #:meta-level 1)
-		     (gestalt-empty))))
-
-(define (spawn-timer-driver)
-  (define s (driver-state (make-timer-heap)))
-  (spawn timer-driver
-	 s
-	 (timer-subscriptions s)))
-
-(define (timer-driver e s)
-  (match e
-    [(message (event _ (list now)) 1 #f)
-     (define actions (fire-timers! (driver-state-heap s) now))
-     ;; Note: compute to-send before recursing, because of side-effects on heap
-     (transition s (list (routing-update (timer-subscriptions s)) actions))]
-    [(message (set-timer label msecs 'relative) 0 #f)
-     (install-timer! s label (+ (current-inexact-milliseconds) msecs))]
-    [(message (set-timer label msecs 'absolute) 0 #f)
-     (install-timer! s label msecs)]
-    [_ #f]))
-
-(define (install-timer! s label deadline)
+(define (install-timer! heap label deadline)
   (define now (current-inexact-milliseconds))
-  (heap-add! (driver-state-heap s) (pending-timer deadline label))
-  (transition s (routing-update (timer-subscriptions s))))
+  (heap-add! heap (pending-timer deadline label)))
+
+;; Racket's alarm-evt is almost the right design for timeouts: its
+;; synchronisation value should be the (or some) value of the clock
+;; after the asked-for time. That way it serves as timeout and
+;; clock-reader in one.
+(define (timer-evt msecs)
+  (handle-evt (alarm-evt msecs)
+	      (lambda (_) (current-inexact-milliseconds))))
