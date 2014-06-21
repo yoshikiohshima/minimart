@@ -128,11 +128,11 @@
 						      (hash-keys old-processes))))
 	      (define newpidstr (format-pids (cons newpid (cdr pids)))) ;; replace parent pid
 	      (with-color BRIGHT-GREEN
-			  (output "~a spawned from ~a (~a total processes now)\n"
+			  (output "~a ~v spawned from ~a (~a total processes now)\n"
 				  newpidstr
+				  behavior
 				  pidstr
 				  newcount))
-	      (output "~a's behavior: ~v\n" newpidstr behavior)
 	      (unless (boring-state? state)
 		(output "~a's initial state:\n" newpidstr)
 		(output-state state))
@@ -141,11 +141,14 @@
 		(pretty-print-gestalt gestalt (current-error-port))))]
 	   [(quit)
 	    (when (or show-process-lifecycle? show-actions?)
-	      (with-color BRIGHT-RED
-			  (output "~a exited (~a total processes now)\n" pidstr newcount))
 	      (match (hash-ref old-processes (car pids) (lambda () #f))
 		[#f (void)]
-		[(process gestalt _behavior state)
+		[(process gestalt behavior state)
+		 (with-color BRIGHT-RED
+			     (output "~a ~v exited (~a total processes now)\n"
+				     pidstr
+				     behavior
+				     newcount))
 		 (unless (boring-state? state)
 		   (output "~a's final state:\n" pidstr)
 		   (output-state state))
