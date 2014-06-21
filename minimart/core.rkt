@@ -276,6 +276,12 @@
        (queue-empty? (world-process-actions w))
        (set-empty? (world-runnable-pids w))))
 
+;; Event PID Process World -> World
+;; Delivers the event to the process, then applies the resulting
+;; transition, updating the world.
+(define (step-process e pid p w)
+  (apply-transition pid (deliver-event e pid p) w))
+
 ;; Event PID Process -> Transition
 ;; Delivers the event to the process, catching any exceptions it
 ;; throws and converting them to quit Actions.
@@ -451,8 +457,7 @@
     [(message body meta-level feedback?)
      (define pids (gestalt-match-value (world-partial-gestalt w) body meta-level feedback?))
      (define pt (world-process-table w))
-     (for/fold ([w w]) [(pid (in-set pids))]
-       (apply-transition pid (deliver-event e pid (hash-ref pt pid)) w))]
+     (for/fold ([w w]) [(pid (in-set pids))] (step-process e pid (hash-ref pt pid) w))]
     [(pending-routing-update g affected-subgestalt known-target)
      (define affected-pids (gestalt-match affected-subgestalt g))
      (define pt (world-process-table w))
@@ -460,8 +465,7 @@
 	 [(pid (in-set (if known-target (set-add affected-pids known-target) affected-pids)))]
        (match (hash-ref pt pid (lambda () #f))
 	 [#f w]
-	 [p (define g1 (gestalt-filter g (process-gestalt p)))
-	    (apply-transition pid (deliver-event (routing-update g1) pid p) w)]))]))
+	 [p (step-process (routing-update (gestalt-filter g (process-gestalt p))) pid p w)]))]))
 
 ;; World -> Transition
 ;; Polls the non-provably-inert processes identified by the
@@ -478,7 +482,7 @@
       (transition (for/fold ([w (struct-copy world w [runnable-pids (set)])])
 		      [(pid (in-set runnable-pids))]
 		    (define p (hash-ref (world-process-table w) pid (lambda () #f)))
-		    (if (not p) w (apply-transition pid (deliver-event #f pid p) w)))
+		    (if (not p) w (step-process #f pid p w)))
 		  '()))) ;; world needs another check to see if more can happen.
 
 ;; Behavior :> (Option Event) World -> Transition
