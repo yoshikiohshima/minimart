@@ -7,13 +7,17 @@
 (require "route.rkt")
 (require "gestalt.rkt")
 (require "functional-queue.rkt")
-(require (only-in web-server/private/util exn->string))
+(require "trace.rkt")
 
 (provide (struct-out routing-update)
 	 (struct-out message)
 	 (struct-out quit)
 	 (struct-out process)
 	 (struct-out transition)
+
+	 (struct-out trigger-guard)
+
+	 (except-out (struct-out world) world)
 
 	 ;; imported from route.rkt:
 	 ?
@@ -37,22 +41,11 @@
 	 deliver-event
 	 transition-bind
 	 sequence-transitions
-	 log-events-and-actions?
 	 routing-implementation)
 
 ;; A PID is a number uniquely identifying a Process within a World.
 ;; Note that PIDs are only meaningful within the context of their
 ;; World: they are not global Process identifiers.
-
-;; (Parameterof (Listof PID))
-;; Path to the active leaf in the process tree. The car end is the
-;; leaf; the cdr end, the root. Used for debugging purposes.
-(define pid-stack (make-parameter '()))
-
-;; (Parameterof Boolean)
-;; True when Worlds should log their internal actions for use in
-;; debugging.
-(define log-events-and-actions? (make-parameter #f))
 
 ;; TODO: support +Inf.0 as a level number
 
@@ -166,7 +159,7 @@
 				 (gestalt-empty)
 				 (make-queue))
 			  -1
-			  boot-actions)))
+			  (clean-actions boot-actions))))
 
 ;; Any -> Boolean; type predicates for Event and Action respectively.
 (define (event? x) (or (routing-update? x) (message? x)))
@@ -180,8 +173,8 @@
 (define (transition-bind k t0)
   (match-define (transition state0 actions0) t0)
   (match (k state0)
-    [(transition state1 actions1) (transition state1 (cons actions0 actions1))]
-    [#f t0]))
+    [#f t0]
+    [(transition state1 actions1) (transition state1 (cons actions0 actions1))]))
 
 ;; Transition (Any -> Transition)* -> Transition
 ;; Each step is a function from state to Transition. The state in t0
@@ -257,13 +250,12 @@
 ;;
 ;; TODO: should step 3 occur before step 1?
 
-;; World PID (Constreeof Action) -> World
+;; World PID (Listof Action) -> World
 ;; Stores actions taken by PID for later interpretation.
 (define (enqueue-actions w pid actions)
   (struct-copy world w
     [process-actions (queue-append-list (world-process-actions w)
-					(filter-map (lambda (a) (and (action? a) (cons pid a)))
-						    (flatten actions)))]))
+					(for/list [(a actions)] (cons pid a)))]))
 
 ;; World -> Boolean
 ;; True if the World has no further reductions it can take.
@@ -283,27 +275,25 @@
   (apply-transition pid (deliver-event e pid p) w))
 
 ;; Event PID Process -> Transition
-;; Delivers the event to the process, catching any exceptions it
-;; throws and converting them to quit Actions.
+;; Delivers the event to the process.
 (define (deliver-event e pid p)
-  (parameterize ((pid-stack (cons pid (pid-stack))))
-    (when (and (log-events-and-actions?) e)
-      (log-info "EVENT ~a: ~v --> ~v ~v"
-		(pid-stack)
-		e
-		(process-behavior p)
-		(if (world? (process-state p))
-		    "#<world>"
-		    (process-state p))))
-    (with-handlers ([(lambda (exn) #t)
-		     (lambda (exn)
-		       (log-error "Process ~a died with exception:\n~a"
-				  (pid-stack)
-				  (exn->string exn))
-		       (transition (process-state p) (list (quit))))])
-      (ensure-transition (with-continuation-mark 'minimart-process
-						 pid ;; TODO: debug-name, other user annotation
-						 ((process-behavior p) e (process-state p)))))))
+  (define-values (maybe-exn t) (call-in-trace-context pid (lambda () (deliver-event* e pid p))))
+  (trace-process-step e pid p maybe-exn t)
+  t)
+
+;; Event PID Process -> (Values (Option Exception) (Option Transition))
+;; Delivers the event to the process, returning its taken transition,
+;; or if it throws an exception, the exception and a synthetic
+;; transition forcing the process to quit.
+(define (deliver-event* e pid p)
+  (with-handlers ([(lambda (exn) #t)
+		   (lambda (exn) (values exn (transition (process-state p) (list (quit)))))])
+    (values
+     #f
+     (clean-transition
+      (ensure-transition
+       (with-continuation-mark 'minimart-process pid
+			       ((process-behavior p) e (process-state p))))))))
 
 ;; Any -> (Option Transition)
 ;; If its argument is non-#f, non-transition, raises an exception.
@@ -312,6 +302,16 @@
       v
       (raise (exn:fail:contract (format "Expected transition (or #f); got ~v" v)
 				(current-continuation-marks)))))
+
+;; (Option Transition) -> (Option Transition)
+;; Filters and flattens action constree in argument.
+(define (clean-transition t)
+  (and t (transition (transition-state t) (clean-actions (transition-actions t)))))
+
+;; (Constreeof Any) -> (Listof Action)
+;; Filters and flattens its argument to a list of actions.
+(define (clean-actions actions)
+  (filter action? (flatten actions)))
 
 ;; World PID -> World
 ;; Marks the given PID as not-provably-inert.
@@ -327,18 +327,7 @@
   (match t
     [#f w]
     [(transition new-state new-actions)
-     (let* ((w (transform-process pid w
-				  (lambda (p)
-				    (when (and (log-events-and-actions?)
-					       (not (null? (flatten new-actions))))
-				      (log-info "ACTIONS ~a: ~v <-- ~v ~v"
-						(cons pid (pid-stack))
-						new-actions
-						(process-behavior p)
-						(if (world? new-state)
-						    "#<world>"
-						    new-state)))
-				    (struct-copy process p [state new-state])))))
+     (let* ((w (transform-process pid w (lambda (p) (struct-copy process p [state new-state])))))
        (enqueue-actions (mark-pid-runnable w pid) pid new-actions))]))
 
 ;; PendingEvent World -> World
@@ -354,7 +343,9 @@
   (for/fold ([t (transition (struct-copy world w [process-actions (make-queue)]) '())])
       ((entry (in-list (queue->list (world-process-actions w)))))
     (match-define (cons pid a) entry)
-    (transition-bind (perform-action pid a) t)))
+    (define t1 (transition-bind (perform-action pid a) t))
+    (trace-internal-step pid a (transition-state t) t1)
+    t1))
 
 ;; World -> Transition
 ;; Interprets queued PendingEvents, delivering resulting Events to Processes.
@@ -376,9 +367,6 @@
 ;; Updates the World's cached copy of the union of its partial- and downward-gestalts.
 (define (update-full-gestalt w)
   (define new-full-gestalt (gestalt-union (world-partial-gestalt w) (world-downward-gestalt w)))
-  ;; (log-info "World ~a new full gestalt:\n~a"
-  ;; 	    (pid-stack)
-  ;; 	    (gestalt->pretty-string new-full-gestalt))
   (struct-copy world w [full-gestalt new-full-gestalt]))
 
 ;; World Gestalt (Option PID) -> World
@@ -423,19 +411,12 @@
 	    (w (struct-copy world w
 		 [next-pid (+ new-pid 1)]
 		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
-       ;; (log-info "Spawned process ~a ~v ~v"
-       ;; 		 (cons new-pid (pid-stack))
-       ;; 		 (process-behavior new-p)
-       ;; 		 (process-state new-p))
        (apply-and-issue-routing-update w (gestalt-empty) new-gestalt new-pid))]
     [(quit)
      (define pt (world-process-table w))
      (define p (hash-ref pt pid (lambda () #f)))
      (if p
 	 (let* ((w (struct-copy world w [process-table (hash-remove pt pid)])))
-	   ;; (log-info "Process ~a terminating; ~a processes remain"
-	   ;; 	     (cons pid (pid-stack))
-	   ;; 	     (hash-count (world-process-table w)))
 	   (apply-and-issue-routing-update w (process-gestalt p) (gestalt-empty) #f))
 	 (transition w '()))]
     [(routing-update gestalt)

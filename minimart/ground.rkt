@@ -7,6 +7,7 @@
 (require racket/list)
 (require "core.rkt")
 (require "gestalt.rkt")
+(require "trace/stderr.rkt")
 
 (provide (struct-out event)
 	 send-ground-message
