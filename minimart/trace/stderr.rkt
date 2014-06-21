@@ -147,7 +147,9 @@
 		 (with-color BRIGHT-RED
 			     (output "~a ~v exited (~a total processes now)\n"
 				     pidstr
-				     behavior
+				     (if (trigger-guard? state)
+					 (trigger-guard-handler state)
+					 behavior)
 				     newcount))
 		 (unless (boring-state? state)
 		   (output "~a's final state:\n" pidstr)
