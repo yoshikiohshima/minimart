@@ -213,7 +213,7 @@
 (define (trigger-guard-handle e s0)
   (match-define (trigger-guard old-gestalt handler old-state) s0)
   (define (deliver s)
-    (match (handler e old-state)
+    (match (ensure-transition (handler e old-state))
       [#f
        (if (eq? s s0) #f (transition s '()))]
       [(transition new-state actions)
@@ -301,14 +301,17 @@
 				  (pid-stack)
 				  (exn->string exn))
 		       (transition (process-state p) (list (quit))))])
-      (match (with-continuation-mark 'minimart-process
-				     pid ;; TODO: debug-name, other user annotation
-				     ((process-behavior p) e (process-state p)))
-	[#f #f] ;; inert.
-	[(? transition? t) t] ;; potentially runnable.
-	[x
-	 (log-error "Process ~a returned non-#f, non-transition: ~v" (pid-stack) x)
-	 (transition (process-state p) (list (quit)))]))))
+      (ensure-transition (with-continuation-mark 'minimart-process
+						 pid ;; TODO: debug-name, other user annotation
+						 ((process-behavior p) e (process-state p)))))))
+
+;; Any -> (Option Transition)
+;; If its argument is non-#f, non-transition, raises an exception.
+(define (ensure-transition v)
+  (if (or (not v) (transition? v))
+      v
+      (raise (exn:fail:contract (format "Expected transition (or #f); got ~v" v)
+				(current-continuation-marks)))))
 
 ;; World PID -> World
 ;; Marks the given PID as not-provably-inert.
