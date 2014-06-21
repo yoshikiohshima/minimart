@@ -22,10 +22,14 @@
 (define flags (for/set [(c (or (getenv "MINIMART_TRACE") "xetpag"))] (string->symbol (string c))))
 
 (define show-exceptions? (set-member? flags 'x))
+(define show-routing-update-events? (set-member? flags 'r))
+(define show-message-events? (set-member? flags 'm))
 (define show-events? (set-member? flags 'e))
 (define show-process-states-pre? (set-member? flags 's))
 (define show-process-states-post? (set-member? flags 't))
 (define show-process-lifecycle? (set-member? flags 'p))
+(define show-routing-update-actions? (set-member? flags 'R))
+(define show-message-actions? (set-member? flags 'M))
 (define show-actions? (set-member? flags 'a))
 (define show-world-gestalt? (set-member? flags 'g))
 
@@ -86,12 +90,12 @@
 	    (when (or relevant-exn? show-events?)
 	      (with-color YELLOW (output "~a was polled for changes.\n" pidstr)))]
 	   [(routing-update g)
-	    (when (or relevant-exn? show-events?)
+	    (when (or relevant-exn? show-events? show-routing-update-events?)
 	      (with-color YELLOW
 			  (output "~a received a routing-update:\n" pidstr)
 			  (pretty-print-gestalt g (current-error-port))))]
 	   [(message body meta-level feedback?)
-	    (when (or relevant-exn? show-events?)
+	    (when (or relevant-exn? show-events? show-message-events?)
 	      (with-color YELLOW
 			  (output "~a received ~a at metalevel ~a:\n"
 				  pidstr
@@ -159,11 +163,11 @@
 		     (output "~a's final gestalt:\n" pidstr)
 		     (pretty-print-gestalt gestalt (current-error-port)))]))]
 	     [(routing-update g)
-	      (when show-actions?
+	      (when (or show-actions? show-routing-update-actions?)
 		(output "~a performed a routing-update:\n" pidstr)
 		(pretty-print-gestalt g (current-error-port)))]
 	     [(message body meta-level feedback?)
-	      (when show-actions?
+	      (when (or show-actions? show-message-actions?)
 		(output "~a sent ~a at metalevel ~a:\n"
 			pidstr
 			(if feedback? "feedback" "a message")
