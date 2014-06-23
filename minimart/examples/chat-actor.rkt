@@ -7,15 +7,22 @@
 (define (spawn-session them us)
   (actor #:name user-session
 
-	 (define user (gensym 'user))
-
 	 (define (send-to-remote fmt . vs)
 	   (send #:meta-level 1 (tcp-channel us them (string->bytes/utf-8 (apply format fmt vs)))))
 	 (define (say who fmt . vs)
 	   (unless (equal? who user) (send-to-remote "~a ~a\n" who (apply format fmt vs))))
 
+	 (define user (gensym 'user))
 	 (send-to-remote "Welcome, ~a.\n" user)
+
+	 (advertise (tcp-channel us them ?) #:meta-level 1)
+	 (subscribe `(,($ who) says ,($ what))
+	   (say who "says: ~a" what))
 	 
+	 (advertise `(,user says ,?))
+	 (subscribe (tcp-channel them us ($ bs)) #:meta-level 1
+	   (send `(,user says ,(string-trim (bytes->string/utf-8 bs)))))
+
  	 (observe-advertisers `(,($ who) says ,?)
 	   #:name present-user-names
 	   #:set who
@@ -24,18 +31,9 @@
 	   (for/list [(who arrived)] (say who "arrived."))
 	   (for/list [(who departed)] (say who "departed.")))
 
-	 (observe-advertisers (tcp-channel them us ?)
-	   #:meta-level 1
+	 (observe-advertisers (tcp-channel them us ?) #:meta-level 1
 	   #:presence remote-present?
-	   (when (not remote-present?) (quit)))
-
-	 (advertise `(,user says ,?))
-	 (subscribe `(,($ who) says ,($ what))
-	   (say who "says: ~a" what))
-
-	 (advertise (tcp-channel us them ?) #:meta-level 1)
-	 (subscribe (tcp-channel them us ($ bs)) #:meta-level 1
-	   (send `(,user says ,(string-trim (bytes->string/utf-8 bs)))))))
+	   (when (not remote-present?) (quit)))))
 
 (spawn-tcp-driver)
 (spawn-world
