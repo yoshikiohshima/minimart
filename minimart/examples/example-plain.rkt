@@ -55,9 +55,7 @@
      #f]
     [_ #f]))
 
-(run-ground (spawn quasi-spy (void) (gestalt-union (sub ? #:level 10 #:meta-level 1)
-						   (pub ? #:level 10 #:meta-level 1)
-						   (sub ? #:level 10)
+(run-ground (spawn quasi-spy (void) (gestalt-union (sub ? #:level 10)
 						   (pub ? #:level 10)))
 	    (spawn-timer-driver)
 	    (send (set-timer 'tick 1000 'relative))

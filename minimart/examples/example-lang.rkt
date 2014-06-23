@@ -13,9 +13,7 @@
      (newline)])
   (printf "========================================\n")
   #f)
-(spawn quasi-spy (void) (gestalt-union (sub ? #:level 10 #:meta-level 1)
-				       (pub ? #:level 10 #:meta-level 1)
-				       (sub ? #:level 10)
+(spawn quasi-spy (void) (gestalt-union (sub ? #:level 10)
 				       (pub ? #:level 10)))
 
 (define (r e s)
