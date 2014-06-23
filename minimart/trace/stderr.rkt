@@ -89,6 +89,9 @@
 	   [#f
 	    (when (or relevant-exn? show-events?)
 	      (with-color YELLOW (output "~a was polled for changes.\n" pidstr)))]
+	   ['#:boot
+	    (when (or relevant-exn? show-events?)
+	      (with-color YELLOW (output "~a was booted.\n" pidstr)))]
 	   [(routing-update g)
 	    (when (or relevant-exn? show-events? show-routing-update-events?)
 	      (with-color YELLOW
@@ -127,7 +130,7 @@
 	   (define new-processes (world-process-table new-w))
 	   (define newcount (hash-count new-processes))
 	   (match a
-	     [(process gestalt behavior state)
+	     [(<spawn> _boot-proc (process gestalt behavior state))
 	      (when (or show-process-lifecycle? show-actions?)
 		(define newpid (set-first (set-subtract (hash-keys new-processes)
 							(hash-keys old-processes))))

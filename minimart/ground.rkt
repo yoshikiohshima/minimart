@@ -59,7 +59,9 @@
 ;; Action* -> Void
 ;; Runs a ground VM, booting the outermost World with the given Actions.
 (define (run-ground . boot-actions)
-  (let await-interrupt ((inert? #f) (p (spawn-world boot-actions)) (active-events '()))
+  (let await-interrupt ((inert? #f)
+			(p (spawn-process (spawn-world boot-actions))) ;; we are guaranteed boot-proc is ignorable here
+			(active-events '()))
     (define active-gestalt (process-gestalt p))
     (define event-list (if inert?
 			   active-events

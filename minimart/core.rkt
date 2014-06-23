@@ -12,6 +12,8 @@
 (provide (struct-out routing-update)
 	 (struct-out message)
 	 (struct-out quit)
+	 (except-out (struct-out spawn) spawn)
+	 (rename-out [make-spawn spawn] [spawn <spawn>])
 	 (struct-out process)
 	 (struct-out transition)
 
@@ -34,7 +36,6 @@
 	 pub
 	 gestalt-accepts?
 
-	 spawn
 	 send
 	 feedback
 	 spawn-world
@@ -63,9 +64,10 @@
 ;; World, instructing the World to take some action on the Process's
 ;; behalf. One of
 ;;  - an Event: change in the Process's interests, or message from the Process
-;;  - a Process: instruction to spawn a new process as described
+;;  - (spawn (Constreeof Action) Process): instruction to spawn a new process as described
 ;;  - (quit): instruction to terminate the sending process
 (struct quit () #:prefab)
+(struct spawn (boot-proc process) #:prefab)
 
 ;; A PendingEvent is a description of a set of Events to be
 ;; communicated to a World's Processes. In naïve implementations of
@@ -133,7 +135,12 @@
 ;; and state. If a Gestalt is supplied, the new process will begin its
 ;; existence with the corresponding subscriptions/advertisements/
 ;; conversational-responsibilities.
-(define (spawn behavior state [gestalt (gestalt-empty)]) (process gestalt behavior state))
+(define (make-spawn #:boot [boot-proc (lambda (state) (transition state '()))]
+		    behavior
+		    state
+		    [gestalt (gestalt-empty)])
+  (spawn boot-proc
+	 (process gestalt behavior state)))
 
 ;; send : Any [#:meta-level Nat] -> Action
 ;; feedback : Any [#:meta-level Nat] -> Action
@@ -149,21 +156,21 @@
 ;; Process. The given actions will be taken by a primordial process
 ;; running in the context of the new World.
 (define (spawn-world . boot-actions)
-  (spawn world-handle-event
-	 (enqueue-actions (world 0
-				 (make-queue)
-				 (set)
-				 (gestalt-empty)
-				 (gestalt-empty)
-				 (hash)
-				 (gestalt-empty)
-				 (make-queue))
-			  -1
-			  (clean-actions boot-actions))))
+  (make-spawn world-handle-event
+	      (enqueue-actions (world 0
+				      (make-queue)
+				      (set)
+				      (gestalt-empty)
+				      (gestalt-empty)
+				      (hash)
+				      (gestalt-empty)
+				      (make-queue))
+			       -1
+			       (clean-actions boot-actions))))
 
 ;; Any -> Boolean; type predicates for Event and Action respectively.
 (define (event? x) (or (routing-update? x) (message? x)))
-(define (action? x) (or (event? x) (process? x) (quit? x)))
+(define (action? x) (or (event? x) (spawn? x) (quit? x)))
 
 ;; (Any -> Transition) Transition -> Transition
 ;; A kind of monad-ish bind operator: threads the state in t0 through
@@ -277,23 +284,23 @@
 ;; Event PID Process -> Transition
 ;; Delivers the event to the process.
 (define (deliver-event e pid p)
-  (define-values (maybe-exn t) (call-in-trace-context pid (lambda () (deliver-event* e pid p))))
+  (invoke-process (process-behavior p) e pid p))
+
+;; (Any -> (Option Transition)) PID Process -> (Option Transition)
+;; Calls f in the context of the given process, catching exceptions.
+(define (invoke-process f e pid p)
+  (define-values (maybe-exn t)
+    (call-in-trace-context
+     pid
+     (lambda ()
+       (with-handlers ([(lambda (exn) #t)
+			(lambda (exn) (values exn (transition (process-state p) (list (quit)))))])
+	 (values
+	  #f
+	  (clean-transition
+	   (ensure-transition (with-continuation-mark 'minimart-process pid (f e (process-state p))))))))))
   (trace-process-step e pid p maybe-exn t)
   t)
-
-;; Event PID Process -> (Values (Option Exception) (Option Transition))
-;; Delivers the event to the process, returning its taken transition,
-;; or if it throws an exception, the exception and a synthetic
-;; transition forcing the process to quit.
-(define (deliver-event* e pid p)
-  (with-handlers ([(lambda (exn) #t)
-		   (lambda (exn) (values exn (transition (process-state p) (list (quit)))))])
-    (values
-     #f
-     (clean-transition
-      (ensure-transition
-       (with-continuation-mark 'minimart-process pid
-			       ((process-behavior p) e (process-state p))))))))
 
 ;; Any -> (Option Transition)
 ;; If its argument is non-#f, non-transition, raises an exception.
@@ -403,14 +410,18 @@
 ;; as a result.
 (define ((perform-action pid a) w)
   (match a
-    [(? process? new-p)
+    [(spawn boot-proc new-p)
      (let* ((new-pid (world-next-pid w))
+	    (initial-t (invoke-process (lambda (e s) (boot-proc s)) '#:boot new-pid new-p))
+	    (initial-actions (if initial-t (transition-actions initial-t) '()))
+	    (new-p (if initial-t (struct-copy process new-p [state (transition-state initial-t)]) new-p))
 	    (new-p (trigger-guard-process new-p))
 	    (new-gestalt (label-gestalt (process-gestalt new-p) new-pid))
 	    (new-p (struct-copy process new-p [gestalt new-gestalt]))
 	    (w (struct-copy world w
 		 [next-pid (+ new-pid 1)]
-		 [process-table (hash-set (world-process-table w) new-pid new-p)])))
+		 [process-table (hash-set (world-process-table w) new-pid new-p)]))
+	    (w (enqueue-actions w new-pid initial-actions)))
        (apply-and-issue-routing-update w (gestalt-empty) new-gestalt new-pid))]
     [(quit)
      (define pt (world-process-table w))
