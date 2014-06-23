@@ -118,11 +118,36 @@
 
  (define (analyze-actor forms-stx)
    (define actor-name #f)
-   (define states '())
+
+   ;; (Listof Identifier)
+   ;; Names for actor state values. User-supplied identifiers.
+   (define statevars '())
+
+   ;; (Listof Identifier)
+   ;; Temporaries usable for internal bindings of state values. Computed, fresh identifiers.
+   (define statetemps '())
+
+   ;; (Listof (Syntax -> SyntaxList))
+   ;; Sequence of functions generating code for responding to routing-update events.
+   ;; State bindings and body definitions are in scope.
    (define gestalt-observers '())
+
+   ;; (Listof Syntax)
+   ;; Fragments computing gestalt of the actor.
+   ;; State bindings and body definitions are in scope.
    (define gestalt-computers '())
+
+   ;; (Listof (Syntax -> Syntax))
+   ;; Sequence of functions generating message-handling clauses for responding to events.
+   ;; State bindings and body definitions are in scope.
    (define message-handlers '())
+
+   ;; (Listof Identifier)
+   ;; Names for body-definitions representing actions to take on actor bootup.
    (define action-ids '())
+
+   ;; (Listof Syntax)
+   ;; Body definition forms.
    (define body-forms '())
 
    (define-syntax-rule (push! var val) (set! var (cons val var)))
@@ -148,9 +173,10 @@
 	(walk-forms #'(rest ...))]
 
        [(#:state [statevar stateexp] rest ...)
-	(begin (match-define (list stateinit) (generate-temporaries (list #'statevar)))
-	       (push! states (list #'statevar stateinit))
-	       (push-many! body-forms (defbinding #'statevar stateinit #'stateexp))
+	(begin (match-define (list statetemp) (generate-temporaries (list #'statevar)))
+	       (push! statevars #'statevar)
+	       (push! statetemps statetemp)
+	       (push-many! body-forms (defbinding #'statevar statetemp #'stateexp))
 	       (walk-forms #'(rest ...)))]
 
        [((observe-subscribers pat body ...) rest ...)
@@ -238,9 +264,13 @@
        (generate-temporaries (list presence-name set-name pat-stx pat-stx set-name)))
      (define-values (projector-stx gestalt-stx matcher-stx binders) (analyze-pattern pat-stx))
 
-     (push-many! states
-		 (if presence-name (list (list presence-name presence-init)) '())
-		 (if set-name (list (list set-name set-init)) '()))
+     (when presence-name
+       (push! statevars presence-name)
+       (push! statetemps presence-init))
+
+     (when set-name
+       (push! statevars set-name)
+       (push! statetemps set-init))
 
      (push-many! gestalt-observers
 		 (if presence-name
@@ -335,8 +365,6 @@
 	 (datum->syntax actor-name (string->symbol (format "~a-state" (syntax->datum actor-name)))))
        (match-define (list e-stx state-stx g-stx compute-gestalt-stx)
 	 (generate-temporaries (list #'event #'state #'gestalt #'compute-gestalt)))
-       (define statevars (map car states))
-       (define stateinits (map cadr states))
        (define result
 	 #`(let ()
 	     (struct #,state-struct-name (#,@statevars) #:prefab)
@@ -346,8 +374,8 @@
 						      (struct-copy #,state-struct-name v [n e] (... ...))]))
 	       (match-state (syntax-rules () [(_ id body (... ...))
 					      (match-lambda
-					       [(and id (struct #,state-struct-name (#,@stateinits)))
-						(syntax-parameterize (#,@(for/list ([sv statevars] [si stateinits])
+					       [(and id (struct #,state-struct-name (#,@statetemps)))
+						(syntax-parameterize (#,@(for/list ([sv statevars] [si statetemps])
 									   #`(#,sv (syntax-id-rules () [_ #,si]))))
 								     body (... ...))])])))
 	      (let ((#,compute-gestalt-stx (match-state #,state-stx
