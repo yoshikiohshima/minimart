@@ -1,6 +1,5 @@
 #lang minimart
 
-(require racket/set)
 (require (only-in racket/string string-trim))
 (require "../drivers/tcp.rkt")
 (require "../demand-matcher.rkt")
