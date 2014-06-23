@@ -73,17 +73,17 @@
 			body-forms
 			forms-stx)
 
-   (define-syntax-rule (analyze-body* body-stx struct-type o [keyword accessor fieldname] ...)
+   (define-syntax-rule (analyze-body* self body-stx struct-type o [keyword accessor fieldname] ...)
      (syntax-case body-stx ()
        [(keyword v rest (... ...))
 	(if (accessor o)
 	    (raise-syntax-error #f (format "duplicate ~a clause" 'keyword) body-stx)
-	    (analyze-observer-body #'(rest (... ...)) (struct-copy struct-type o [fieldname #'v])))]
+	    (self #'(rest (... ...)) (struct-copy struct-type o [fieldname #'v])))]
        ...
        [other (values o #'other)]))
 
    (define (analyze-observer-body body-stx o)
-     (analyze-body* body-stx observer o
+     (analyze-body* analyze-observer-body body-stx observer o
 		    [#:when observer-condition condition]
 		    [#:level observer-level level]
 		    [#:meta-level observer-meta-level meta-level]
@@ -94,7 +94,7 @@
 		    [#:removed observer-removed-name removed-name]))
 
    (define (analyze-participator-body body-stx p)
-     (analyze-body* body-stx participator p
+     (analyze-body* analyze-participator-body body-stx participator p
 		    [#:when participator-condition condition]
 		    [#:meta-level participator-meta-level meta-level]))
 
@@ -286,26 +286,29 @@
 						[(and id (struct #,state-struct-name (#,@stateinits)))
 						 (syntax-parameterize (#,@(for/list ([sv statevars] [si stateinits])
 									    #`(#,sv (syntax-id-rules () [_ #,si]))))
-								      body (... ...))])]))
-		(compute-gestalt (syntax-rules () [(_ state) (#,compute-gestalt-stx state)])))
+								      body (... ...))])])))
 	       (let ((#,compute-gestalt-stx (match-state #,state-stx
 					      (gestalt-union #,@gestalt-computers)))
 		     (#,state-stx (#,state-struct-name #,@statevars)))
-		 (spawn #:boot (begin-transition #,@(reverse action-ids))
-			(procedure-rename
-			 (lambda (#,e-stx #,state-stx)
-			   ((match-state #,state-stx
-			      ((match #,e-stx
-				 [(routing-update #,g-stx)
-				  (begin-transition
-				    #,@(append-map (lambda (p) (syntax->list (p g-stx))) gestalt-observers))]
-				 #,@(map (lambda (p) (p e-stx)) message-handlers)
-				 [_ (lambda (state) #f)])
-			       #,state-stx))
-			    #,state-stx))
-			 '#,actor-name)
-			#,state-stx
-			(#,compute-gestalt-stx #,state-stx))))))
+		 (syntax-parameterize
+		  ((compute-gestalt (syntax-rules () [(_ state) (#,compute-gestalt-stx state)])))
+		  (spawn #:boot (begin-transition #,@(reverse action-ids))
+			 (procedure-rename
+			  (lambda (#,e-stx #,state-stx)
+			    ((match-state #,state-stx
+					  ((match #,e-stx
+					     [(routing-update #,g-stx)
+					      (begin-transition
+						#,@(append-map
+						    (lambda (p) (syntax->list (p g-stx)))
+						    gestalt-observers))]
+					     #,@(map (lambda (p) (p e-stx)) message-handlers)
+					     [_ (lambda (state) #f)])
+					   #,state-stx))
+			     #,state-stx))
+			  '#,actor-name)
+			 #,state-stx
+			 (#,compute-gestalt-stx #,state-stx)))))))
 	;; (pretty-print `(result ,(syntax->datum result)))
 	result)]
 
