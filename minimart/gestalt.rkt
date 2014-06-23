@@ -25,6 +25,7 @@
 	 simple-gestalt
 	 gestalt-empty
 	 gestalt-empty?
+	 gestalt-union*
 	 gestalt-union
 	 gestalt-filter
 	 gestalt-match
@@ -263,15 +264,20 @@
 		     (cons (matcher-combiner (car sa1) (car sa2))
 			   (matcher-combiner (cdr sa1) (cdr sa2))))))
 
-;; Gestalt* -> Gestalt
-;; Computes the union of its arguments.
-(define (gestalt-union . gs)
+;; (Listof Gestalt) -> Gestalt
+;; Computes the union of the given gestalts.
+(define (gestalt-union* gs)
   (if (null? gs)
       (gestalt-empty)
       (let walk ((gs gs))
 	(match gs
 	  [(list g) g]
 	  [(cons g rest) (gestalt-union1 g (walk rest))]))))
+
+;; Gestalt* -> Gestalt
+;; Computes the union of its arguments.
+(define (gestalt-union . gs)
+  (gestalt-union* gs))
 
 ;; Gestalt Gestalt -> Gestalt
 ;; Computes the union of its arguments.
