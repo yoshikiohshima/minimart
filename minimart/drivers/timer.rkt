@@ -20,21 +20,23 @@
 (struct timer-expired (label msecs) #:prefab)
 
 (define (spawn-timer-driver)
-  (define control-ch (make-channel))
-  (thread (lambda () (timer-driver-thread-main control-ch)))
-  (spawn timer-driver control-ch (gestalt-union (sub (set-timer ? ? 'relative))
-						(sub (set-timer ? ? 'absolute))
-						(pub (timer-expired ? ?))
-						(sub (timer-expired ? ?) #:meta-level 1))))
+  (actor #:name timer-driver
+	 #:state [count 0]
 
-(define (timer-driver e control-ch)
-  (match e
-    [(message (? timer-expired? expiry) 1 #f)
-     (transition control-ch (send expiry))]
-    [(message (? set-timer? instruction) 0 #f)
-     (channel-put control-ch instruction)
-     #f]
-    [_ #f]))
+	 (define control-ch (make-channel))
+	 (thread (lambda () (timer-driver-thread-main control-ch)))
+
+	 (subscribe ($ expiry (timer-expired ? ?))
+	   #:meta-level 1
+	   #:when (positive? count)
+	   (send expiry)
+	   #:update [count (- count 1)]
+	   #:update-routes) ;; TODO: only update-routes when count is zero
+
+	 (subscribe ($ instruction (set-timer ? ? ?))
+	   (channel-put control-ch instruction)
+	   #:update [count (+ count 1)]
+	   #:update-routes))) ;; TODO: only update-routes when count was zero
 
 (define (timer-driver-thread-main control-ch)
   (define heap (make-timer-heap))
