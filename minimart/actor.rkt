@@ -512,7 +512,7 @@
 	  (transition state (list #,@(reverse action-ids))))]
 
      [(#:run-transition exp rest ...)
-      #`(match-state _state
+      #`(match-state state
 	  #,@(reverse final-forms)
 	  (sequence-transitions (transition state (list #,@(reverse action-ids)))
 				exp
