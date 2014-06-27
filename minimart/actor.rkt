@@ -1,5 +1,8 @@
 #lang racket/base
 
+;; TODO: syntax-id-rules: raise-syntax-error on set!, pointing users
+;; to the #:update pseudo-action.
+
 (provide actor
 	 observe-subscribers
 	 observe-advertisers
