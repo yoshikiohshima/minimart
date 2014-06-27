@@ -35,6 +35,7 @@
 	 sub
 	 pub
 	 gestalt-accepts?
+	 filter-event
 
 	 send
 	 feedback
@@ -130,6 +131,14 @@
 (define (gestalt-accepts? g m)
   (match-define (message b ml f?) m)
   (not (set-empty? (gestalt-match-value g b ml f?))))
+
+;; (Option Event) Gestalt -> (Option Event)
+;; Returns a filtered version of e, narrowed to the perspective of g-filter.
+(define (filter-event e g-filter)
+  (match e
+    [#f #f]
+    [(routing-update g) (routing-update (gestalt-filter g g-filter))]
+    [(? message? m) (and (gestalt-accepts? g-filter m) m)]))
 
 ;; Behavior Any [Gestalt] -> Action
 ;; Constructs a spawn Action for a new process with the given behavior
