@@ -8,6 +8,7 @@
 (require "route.rkt")
 
 (provide (struct-out gestalt)
+	 (struct-out projection)
 	 gestalt-match-value
 
 	 project-subs
@@ -71,14 +72,14 @@
 ;;      -- Greg Egan, "Diaspora"
 ;;         http://gregegan.customer.netspace.net.au/DIASPORA/01/Orphanogenesis.html
 ;;
-(struct gestalt (metalevels) #:prefab)
+(struct gestalt (metalevels))
 
 ;; Convention: A GestaltSet is a Gestalt where the Matchers map to #t
 ;; instead of (NonemptySetof PID) or any other value.
 
 ;; A GestaltProjection is a single-metalevel, single-level fragment of
 ;; a gestalt with capture-groups. See matcher-project in route.rkt.
-(struct projection (metalevel level get-advertisements? spec compiled) #:transparent)
+(struct projection (metalevel level get-advertisements? spec compiled))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
