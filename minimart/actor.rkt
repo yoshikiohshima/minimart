@@ -3,6 +3,9 @@
 ;; TODO: syntax-id-rules: raise-syntax-error on set!, pointing users
 ;; to the #:update pseudo-action.
 
+;; TODO: enforce presence of #:arguments, and enforce that it declares
+;; all the free variables in the actor.
+
 (provide actor
 	 observe-subscribers
 	 observe-advertisers
