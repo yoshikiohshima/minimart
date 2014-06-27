@@ -242,7 +242,7 @@
 	       (if (ormap (lambda (i) (free-identifier=? #'head i))
 			  (syntax->list #'(define-values define-syntaxes begin-for-syntax
 					    module module*
-					    #%module-begin 
+					    #%module-begin
 					    #%require #%provide)))
 		   (begin (push! body-forms #'expr)
 			  (walk-forms #'(rest ...)))
@@ -507,7 +507,7 @@
  (define (accumulate-actions context-id action-ids final-forms forms)
    (syntax-case forms ()
      [()
-      #`(match-state state 
+      #`(match-state state
 	  #,@(reverse final-forms)
 	  (transition state (list #,@(reverse action-ids))))]
 
@@ -544,7 +544,7 @@
 	     (if (ormap (lambda (i) (free-identifier=? #'head i))
 			(syntax->list #'(define-values define-syntaxes begin-for-syntax
 					  module module*
-					  #%module-begin 
+					  #%module-begin
 					  #%require #%provide)))
 		 (accumulate-actions context-id
 				     action-ids
