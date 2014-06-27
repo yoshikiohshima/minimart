@@ -410,12 +410,13 @@
 		#`(if #,condition #,gestalt-name (gestalt-empty))
 		gestalt-name))
 
-     (push! event-handlers
-	    (lambda (e-stx)
-	      #`(match #,e-stx
-		  [(message #,matcher-stx (== #,(or meta-level 0)) #,pub?)
-		   (begin-transition #,@remaining-stx)]
-		  [_ noop-transition]))))
+     (when (not (stx-null? remaining-stx))
+       (push! event-handlers
+	      (lambda (e-stx)
+		#`(match #,e-stx
+		    [(message #,matcher-stx (== #,(or meta-level 0)) #,pub?)
+		     (begin-transition #,@remaining-stx)]
+		    [_ noop-transition])))))
 
    (define (analyze-group-participation! loopspecs-stx pat-stx body-stx pub?)
      (define-values (p remaining-stx) (analyze-participator-body body-stx (participator #f #f)))
