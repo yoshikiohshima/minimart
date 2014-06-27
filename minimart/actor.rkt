@@ -7,6 +7,7 @@
 ;; all the free variables in the actor.
 
 (provide actor
+	 observe-gestalt
 	 observe-subscribers
 	 observe-advertisers
 	 advertise
@@ -39,6 +40,7 @@
     [(_ forms ...)
      (analyze-actor #'(forms ...))]))
 
+(define-syntax (observe-gestalt stx) (raise-syntax-error #f "Use of observe-gestalt outside actor form" stx))
 (define-syntax (observe-subscribers stx) (raise-syntax-error #f "Use of observe-subscribers outside actor form" stx))
 (define-syntax (observe-advertisers stx) (raise-syntax-error #f "Use of observe-advertisers outside actor form" stx))
 (define-syntax (advertise stx) (raise-syntax-error #f "Use of advertise outside actor form" stx))
@@ -179,7 +181,8 @@
      (push! body-forms #`(define #,statetemp-stx #,stateexp-stx)))
 
    (define (walk-forms forms-stx)
-     (syntax-case forms-stx (observe-subscribers
+     (syntax-case forms-stx (observe-gestalt
+			     observe-subscribers
 			     observe-advertisers
 			     advertise
 			     subscribe
@@ -200,6 +203,10 @@
        [(#:state [statevar stateexp] rest ...)
 	(begin (define-temporaries [statetemp #'statevar])
 	       (push-statevar! #'statevar statetemp #'stateexp)
+	       (walk-forms #'(rest ...)))]
+
+       [((observe-gestalt g [pattern body ...] ...) rest ...)
+	(begin (analyze-general-observer! #'g #'([pattern (begin-transition body ...)] ...))
 	       (walk-forms #'(rest ...)))]
 
        [((observe-subscribers pat body ...) rest ...)
@@ -272,6 +279,31 @@
      (analyze-body* analyze-participator-body body-stx participator p
 		    [#:when participator-condition condition]
 		    [#:meta-level participator-meta-level meta-level]))
+
+   (define (analyze-general-observer! gestalt-stx event-handler-clauses-stx)
+     (define-temporaries
+       [gestalt-name0 #'general]
+       [gestalt-init gestalt-stx])
+     (define gestalt-name (identifier-append gestalt-stx 'gestalt: gestalt-name0))
+     (push-statevar! gestalt-name gestalt-init #'#f)
+
+     (push! gestalt-updaters
+	    #`(begin
+		(define #,gestalt-init #,gestalt-stx)
+		#:update [#,gestalt-name #,gestalt-init]))
+
+     (push! gestalt-fragments gestalt-name)
+
+     (push! event-handlers
+	    (lambda (e-stx)
+	      #`(match-state state
+			     (let ((filtered-event (filter-event #,e-stx #,gestalt-name)))
+			       (if (not filtered-event)
+				   #f
+				   ((match filtered-event
+				      #,@event-handler-clauses-stx
+				      [_ #f])
+				    state)))))))
 
    (define (analyze-observation! pat-stx body-stx pub?)
      (define-values (o remaining-stx)
@@ -538,6 +570,7 @@
 
 ;;; Local Variables:
 ;;; eval: (put 'begin-transition 'scheme-indent-function 0)
+;;; eval: (put 'observe-gestalt 'scheme-indent-function 1)
 ;;; eval: (put 'observe-subscribers 'scheme-indent-function 1)
 ;;; eval: (put 'observe-advertisers 'scheme-indent-function 1)
 ;;; eval: (put 'subscribe 'scheme-indent-function 1)
