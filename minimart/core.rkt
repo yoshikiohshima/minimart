@@ -42,6 +42,7 @@
 	 deliver-event
 	 transition-bind
 	 sequence-transitions
+	 clean-actions
 	 routing-implementation)
 
 ;; A PID is a number uniquely identifying a Process within a World.
