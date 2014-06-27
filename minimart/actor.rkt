@@ -340,11 +340,16 @@
      (when gestalt-name-available?
        (push! gestalt-updaters
 	      #`(begin
-		  (define #,projector-init (#,(if pub? #'project-subs #'project-pubs) #,projector-stx
-					    #:level #,(or level 0) #:meta-level #,(or meta-level 0)))
+		  (define #,projector-init
+		    (#,(if pub? #'project-subs #'project-pubs) #,projector-stx
+		     #:level #,(or level 0) #:meta-level #,(or meta-level 0)))
 		  (define #,gestalt-init (projection->gestalt #,projector-init))
-		  #,@(if using-set? #`(#:update [#,projector-name #,projector-init]) #'())
-		  #,@(if gestalt-name-available? #`(#:update [#,gestalt-name #,gestalt-init]) #'()))))
+		  #,@(if using-set?
+			 #`(#:update [#,projector-name #,projector-init])
+			 #'())
+		  #,@(if gestalt-name-available?
+			 #`(#:update [#,gestalt-name #,gestalt-init])
+			 #'()))))
 
      (push! gestalt-fragments
 	    (let ((g (if gestalt-name-available?
@@ -415,17 +420,21 @@
 	     (let ()
 	       #,@(for/list [(sv statevars)] #`(define-syntax-parameter #,sv #f))
 	       (syntax-parameterize
-		((update-state-struct (syntax-rules () [(_ v [n e] (... ...))
-							(struct-copy #,state-struct-name v [n e] (... ...))]))
-		 (match-state (syntax-rules () [(_ id body (... ...))
-						(match-lambda
-						 [(and id (struct #,state-struct-name (#,@statetemps)))
-						  (syntax-parameterize (#,@(for/list ([sv statevars] [si statetemps])
-									     #`(#,sv (syntax-id-rules () [_ #,si]))))
-								       body (... ...))])])))
+		((update-state-struct
+		  (syntax-rules () [(_ v [n e] (... ...))
+				    (struct-copy #,state-struct-name v [n e] (... ...))]))
+		 (match-state
+		  (syntax-rules () [(_ id body (... ...))
+				    (match-lambda
+				     [(and id (struct #,state-struct-name (#,@statetemps)))
+				      (syntax-parameterize
+				       (#,@(for/list ([sv statevars] [si statetemps])
+					     #`(#,sv (syntax-id-rules () [_ #,si]))))
+				       body (... ...))])])))
 		(splicing-syntax-parameterize
 		 ((update-gestalt (syntax-id-rules () [_ #,update-gestalt-stx]))
-		  #,@(for/list ([sv statevars] [si statetemps]) #`(#,sv (syntax-id-rules () [_ #,si]))))
+		  #,@(for/list ([sv statevars] [si statetemps])
+		       #`(#,sv (syntax-id-rules () [_ #,si]))))
 		 #,@(reverse body-forms)
 		 (define #,update-gestalt-stx
 		   (begin-transition
@@ -433,7 +442,8 @@
 		     (routing-update (gestalt-union #,@gestalt-fragments))))
 		 (match (#,update-gestalt-stx (#,state-struct-name #,@statevars))
 		   [(transition #,state-stx initial-gestalt-actions)
-		    (match-define (list (routing-update initial-gestalt)) (clean-actions initial-gestalt-actions))
+		    (match-define (list (routing-update initial-gestalt))
+		      (clean-actions initial-gestalt-actions))
 		    (spawn #:boot (begin-transition #,@(reverse action-ids))
 			   (procedure-rename
 			    (lambda (#,e-stx #,state-stx)
