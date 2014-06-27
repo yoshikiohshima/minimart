@@ -14,7 +14,8 @@
 	 for/advertise
 	 for/subscribe
 	 define-transition
-	 begin-transition)
+	 begin-transition
+	 noop-transition)
 
 ;; (require (for-syntax racket/pretty))
 ;; (require (for-syntax racket/trace))
@@ -59,6 +60,9 @@
        (define result (accumulate-actions (gensym 'begin-transition) '() '() #'(forms ...)))
        ;; (pretty-print `(result ,(syntax->datum result)))
        result)]))
+
+(define (noop-transition state)
+  (transition state '()))
 
 (begin-for-syntax
 
@@ -142,11 +146,6 @@
    ;; Temporaries usable for internal bindings of state values. Computed, fresh identifiers.
    (define statetemps '())
 
-   ;; (Listof (Syntax -> SyntaxList))
-   ;; Sequence of functions generating code for responding to routing-update events.
-   ;; State bindings and body definitions are in scope.
-   (define gestalt-observers '())
-
    ;; (Listof Syntax)
    ;; Fragments computing gestalt of the actor. Each is in transition context.
    ;; State bindings and body definitions are in scope.
@@ -158,9 +157,10 @@
    (define gestalt-fragments '())
 
    ;; (Listof (Syntax -> Syntax))
-   ;; Sequence of functions generating message-handling clauses for responding to events.
+   ;; Sequence of functions generating expressions yielding
+   ;; transition-functions for responding to events.
    ;; State bindings and body definitions are in scope.
-   (define message-handlers '())
+   (define event-handlers '())
 
    ;; (Listof Identifier)
    ;; Names for body-definitions representing actions to take on actor bootup.
@@ -306,36 +306,39 @@
      (when gestalt-name-available?
        (push-statevar! gestalt-name gestalt-init #'#f))
 
-     (push-many! gestalt-observers
-		 (if using-presence?
-		     (list (lambda (g-stx)
-			     #`(#:update [#,presence-name
-					  (not (gestalt-empty?
-						(gestalt-filter #,g-stx #,gestalt-name)))])))
-		     '())
-		 (if using-set?
-		     (list (lambda (g-stx)
-			     #`((define #,set-temp
-				  #,(if set-exp
-					#`(for/set [(e (in-set
-							(gestalt-project/keys #,g-stx
-									      #,projector-name)))]
-					    (match-define (list #,@binders) e)
-					    #,set-exp)
-					#`(gestalt-project/keys #,g-stx #,projector-name)))
-				#,@(if added-name
-				       #`((define #,added-name (set-subtract #,set-temp
-									     #,set-name)))
-				       #'())
-				#,@(if removed-name
-				       #`((define #,removed-name (set-subtract #,set-name
-									       #,set-temp)))
-				       #'())
-				#,@(if set-name
-				       #`(#:update [#,set-name #,set-temp])
-				       #'()))))
-		     '())
-		 (list (lambda (g-stx) remaining-stx)))
+     (push! event-handlers
+	    (lambda (e-stx)
+	      #`(match #,e-stx
+		  [(routing-update g)
+		   (begin-transition
+		     #,@(if using-presence?
+			    #`(#:update [#,presence-name
+					 (not (gestalt-empty?
+					       (gestalt-filter g #,gestalt-name)))])
+			    #'())
+		     #,@(if using-set?
+			    #`((define #,set-temp
+				 #,(if set-exp
+				       #`(for/set [(e (in-set
+						       (gestalt-project/keys g
+									     #,projector-name)))]
+					   (match-define (list #,@binders) e)
+					   #,set-exp)
+				       #`(gestalt-project/keys g #,projector-name)))
+			       #,@(if added-name
+				      #`((define #,added-name (set-subtract #,set-temp
+									    #,set-name)))
+				      #'())
+			       #,@(if removed-name
+				      #`((define #,removed-name (set-subtract #,set-name
+									      #,set-temp)))
+				      #'())
+			       #,@(if set-name
+				      #`(#:update [#,set-name #,set-temp])
+				      #'()))
+			    #'())
+		     #,@remaining-stx)]
+		  [_ noop-transition])))
 
      (when gestalt-name-available?
        (push! gestalt-updaters
@@ -375,10 +378,12 @@
 		#`(if #,condition #,gestalt-name (gestalt-empty))
 		gestalt-name))
 
-     (push! message-handlers
+     (push! event-handlers
 	    (lambda (e-stx)
-	      #`[(message #,matcher-stx (== #,(or meta-level 0)) #,pub?)
-		 (begin-transition #,@remaining-stx)])))
+	      #`(match #,e-stx
+		  [(message #,matcher-stx (== #,(or meta-level 0)) #,pub?)
+		   (begin-transition #,@remaining-stx)]
+		  [_ noop-transition]))))
 
    (define (analyze-group-participation! loopspecs-stx pat-stx body-stx pub?)
      (define-values (p remaining-stx) (analyze-participator-body body-stx (participator #f #f)))
@@ -412,7 +417,6 @@
        (define-temporaries
 	 [e-stx #'event]
 	 [state-stx #'state]
-	 [g-stx #'gestalt]
 	 [update-gestalt-stx #'update-gestalt])
        (define result
 	 #`(let ()
@@ -447,15 +451,10 @@
 		    (spawn #:boot (begin-transition #,@(reverse action-ids))
 			   (procedure-rename
 			    (lambda (#,e-stx #,state-stx)
-			      ((match #,e-stx
-				 [(routing-update #,g-stx)
-				  (begin-transition
-				    #,@(append-map
-					(lambda (p) (syntax->list (p g-stx)))
-					gestalt-observers))]
-				 #,@(map (lambda (p) (p e-stx)) message-handlers)
-				 [_ (lambda (state) #f)])
-			       #,state-stx))
+			      (and #,e-stx
+				   (sequence-transitions (transition #,state-stx '())
+							 #,@(map (lambda (p) (p e-stx))
+								 (reverse event-handlers)))))
 			    '#,actor-name)
 			   #,state-stx
 			   initial-gestalt)]))))))
