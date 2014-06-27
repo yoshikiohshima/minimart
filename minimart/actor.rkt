@@ -334,18 +334,23 @@
 		     '())
 		 (list (lambda (g-stx) remaining-stx)))
 
-     (push! gestalt-updaters
-	    #`(begin
-		(define #,projector-init (#,(if pub? #'project-subs #'project-pubs) #,projector-stx
-					  #:level #,(or level 0) #:meta-level #,(or meta-level 0)))
-		(define #,gestalt-init (projection->gestalt #,projector-init))
-		#,@(if using-set? #`(#:update [#,projector-name #,projector-init]) #'())
-		#,@(if gestalt-name-available? #`(#:update [#,gestalt-name #,gestalt-init]) #'())))
+     (when gestalt-name-available?
+       (push! gestalt-updaters
+	      #`(begin
+		  (define #,projector-init (#,(if pub? #'project-subs #'project-pubs) #,projector-stx
+					    #:level #,(or level 0) #:meta-level #,(or meta-level 0)))
+		  (define #,gestalt-init (projection->gestalt #,projector-init))
+		  #,@(if using-set? #`(#:update [#,projector-name #,projector-init]) #'())
+		  #,@(if gestalt-name-available? #`(#:update [#,gestalt-name #,gestalt-init]) #'()))))
 
      (push! gestalt-fragments
-	    (if condition
-		#`(if #,condition #,(if gestalt-name-available? gestalt-name gestalt-stx) (gestalt-empty))
-		(if gestalt-name-available? gestalt-name gestalt-stx))))
+	    (let ((g (if gestalt-name-available?
+			 gestalt-name
+			 #`(#,(if pub? #'pub #'sub) #,gestalt-stx
+			    #:level #,(+ 1 (or level 0)) #:meta-level #,(or meta-level 0)))))
+	      (if condition
+		  #`(if #,condition #,g (gestalt-empty))
+		  g))))
 
    (define (analyze-participation! pat-stx body-stx pub?)
      (define-values (p remaining-stx) (analyze-participator-body body-stx (participator #f #f)))
