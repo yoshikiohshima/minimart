@@ -283,42 +283,38 @@
 ;; Computes the union of the multimaps passed in.
 (define matcher-union
   (let ()
-    ;; TODO: fold in the #f-checks from merge to walk, like js-marketplace does
-    (define (merge o1 o2)
-      (match* (o1 o2)
+    (define (walk re1 re2)
+      (match* (re1 re2)
 	[(#f #f) #f]
 	[(#f r) r]
 	[(r #f) r]
-	[(r1 r2) (walk r1 r2)]))
-    (define (walk re1 re2)
-      (match* (re1 re2)
 	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
 	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
 	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
 	[((success v1) (success v2)) (rsuccess ((matcher-union-successes) v1 v2))]
 	[((? hash? h1) (? hash? h2))
-	 (define w (merge (rlookup h1 ?) (rlookup h2 ?)))
-	 (if w (merge/wildcard w h1 h2) (merge/no-wildcard h1 h2))]))
-    (define (merge/wildcard w h1 h2)
+	 (define w (walk (rlookup h1 ?) (rlookup h2 ?)))
+	 (if w (walk/wildcard w h1 h2) (walk/no-wildcard h1 h2))]))
+    (define (walk/wildcard w h1 h2)
       (for/fold [(acc (rwild w))]
 	  [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
-	(define k (merge (rlookup h1 key) (rlookup h2 key)))
+	(define k (walk (rlookup h1 key) (rlookup h2 key)))
 	(rupdate acc
 		 key
 		 (cond
-		  [(key-open? key) (merge (rwildseq w) k)]
+		  [(key-open? key) (walk (rwildseq w) k)]
 		  [(key-close? key) (if (wildcard-sequence? w)
-					(merge (wildcard-sequence-matcher w) k)
+					(walk (wildcard-sequence-matcher w) k)
 					k)]
-		  [else (merge w k)]))))
-    (define (merge/no-wildcard h1 h2)
-      (define-values (merge-fn smaller-h larger-h)
+		  [else (walk w k)]))))
+    (define (walk/no-wildcard h1 h2)
+      (define-values (walk-fn smaller-h larger-h)
 	(if (< (hash-count h1) (hash-count h2))
-	    (values merge h1 h2)
-	    (values (flip merge) h2 h1)))
+	    (values walk h1 h2)
+	    (values (flip walk) h2 h1)))
       (for/fold [(acc larger-h)] [((key k1) (in-hash smaller-h))]
-	(rupdate acc key (merge-fn k1 (rlookup larger-h key)))))
-    merge))
+	(rupdate acc key (walk-fn k1 (rlookup larger-h key)))))
+    walk))
 
 ;; (A B -> C) -> A B -> B A -> C
 (define ((flip f) a b) (f b a))
