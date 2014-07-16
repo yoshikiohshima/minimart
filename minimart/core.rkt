@@ -409,7 +409,7 @@
 ;; Process used to be interested in; new-gestalt is its new interests.
 (define (apply-and-issue-routing-update w old-gestalt new-gestalt known-target)
   (define new-partial
-    (gestalt-union (gestalt-erase-path (world-partial-gestalt w) old-gestalt) new-gestalt))
+    (gestalt-union (gestalt-subtract (world-partial-gestalt w) old-gestalt) new-gestalt))
   (issue-routing-update (update-full-gestalt (struct-copy world w [partial-gestalt new-partial]))
 			(gestalt-union old-gestalt new-gestalt)
 			known-target))

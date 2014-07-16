@@ -23,7 +23,7 @@
 	 pattern->matcher*
 	 matcher-union
 	 matcher-intersect
-	 matcher-erase-path
+	 matcher-subtract
 	 matcher-match-value
 	 matcher-match-matcher
 	 matcher-append
@@ -45,7 +45,7 @@
 
 	 matcher-union-successes
 	 matcher-intersect-successes
-	 matcher-erase-path-successes
+	 matcher-subtract-successes
 	 matcher-match-matcher-successes
 	 matcher-match-matcher-unit
 	 matcher-project-success)
@@ -72,7 +72,7 @@
 
 (define matcher-intersect-successes (make-parameter set-union))
 
-(define matcher-erase-path-successes
+(define matcher-subtract-successes
   (make-parameter
    (lambda (s1 s2)
      (define r (set-subtract s1 s2))
@@ -385,30 +385,27 @@
 	[(r1 r2) (walk r1 r2)]))))
 
 ;; Matcher Matcher -> Matcher
-;; Removes re2's mappings from re1. Assumes re2 has previously been union'd into re1.
+;; Removes re2's mappings from re1.
 ;; The combine-successes function should return #f to signal "no remaining success values".
-(define (matcher-erase-path original1 original2)
+(define (matcher-subtract original1 original2)
   (let ()
     (define (cofinite-pattern)
-      (error 'matcher-erase-path "Cofinite pattern required subtracting:\n     ~a\nfrom ~a"
+      (error 'matcher-subtract "Cofinite pattern required subtracting:\n     ~a\nfrom ~a"
 	     (matcher->pretty-string original2 #:indent 5)
 	     (matcher->pretty-string original1 #:indent 5)))
-    (define (erase-path r1 r2)
+    (define (walk r1 r2)
       (match* (r1 r2)
 	[(#f #f) #f]
 	[(r #f) r]
 	[(#f r) (cofinite-pattern)]
-	[(r1 r2) (walk r1 r2)]))
-    (define (walk path aggregate)
-      (match* (path aggregate)
 	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
 	[((wildcard-sequence r1) r2) (cofinite-pattern)]
 	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-	[((success v1) (success v2)) (rsuccess ((matcher-erase-path-successes) v1 v2))]
+	[((success v1) (success v2)) (rsuccess ((matcher-subtract-successes) v1 v2))]
 	[((? hash? h1) (? hash? h2))
 	 (define w1 (rlookup h1 ?))
 	 (define w2 (rlookup h2 ?))
-	 (define w (erase-path w1 w2))
+	 (define w (walk w1 w2))
 	 (define (examine-key acc key)
 	   (define updated-k (match* ((rlookup h1 key) (rlookup h2 key))
 			       [(#f #f) #f]
@@ -447,7 +444,7 @@
 				 k)]
 	   [else (walk k w)])
 	  k))
-    (erase-path original1 original2)))
+    (walk original1 original2)))
 
 ;; Matcher -> Matcher
 ;; Checks for redundant branches in its argument: when a matcher
@@ -1192,8 +1189,8 @@
     (pretty-print-matcher* r1)
     (pretty-print-matcher* r2)
     (pretty-print-matcher* r12)
-    (pretty-print-matcher* (matcher-erase-path r12 r1))
-    (pretty-print-matcher* (matcher-erase-path r12 r2))
+    (pretty-print-matcher* (matcher-subtract r12 r1))
+    (pretty-print-matcher* (matcher-subtract r12 r2))
     (void))
 
   (let* ((r1 (matcher-union (pattern->matcher SA (list 'a ?))
@@ -1202,8 +1199,8 @@
 	 (r12 (matcher-union r1 r2)))
     (printf "\n-=-=-=-=-=-=-=-=- erase2\n")
     (pretty-print-matcher* r12)
-    (pretty-print-matcher* (matcher-erase-path r12 r1))
-    (pretty-print-matcher* (matcher-erase-path r12 r2))
+    (pretty-print-matcher* (matcher-subtract r12 r1))
+    (pretty-print-matcher* (matcher-subtract r12 r2))
     (void))
 
   )
@@ -1461,17 +1458,17 @@
 (module+ test
   (let ((A (pattern->matcher SA ?))
 	(B (pattern->matcher SB (list (list (list (list 'foo)))))))
-    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+    (check-requal? (pretty-print-matcher* (matcher-subtract (matcher-union A B) B))
 		   A))
   (let ((A (pattern->matcher SA ?))
 	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
-    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+    (check-requal? (pretty-print-matcher* (matcher-subtract (matcher-union A B) B))
 		   A))
   (let ((A (pattern->matcher SA ?))
 	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
-    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) A))
+    (check-requal? (pretty-print-matcher* (matcher-subtract (matcher-union A B) A))
 		   B)))
 
 (module+ test

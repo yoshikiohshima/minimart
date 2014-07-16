@@ -30,7 +30,7 @@
 	 gestalt-union
 	 gestalt-filter
 	 gestalt-match
-	 gestalt-erase-path
+	 gestalt-subtract
 	 gestalt-transform
 	 strip-gestalt-label
 	 label-gestalt
@@ -359,10 +359,10 @@
 
 ;; Gestalt Gestalt -> Gestalt
 ;; Erases the g2-subset of g1 from g1, yielding the result.
-(define (gestalt-erase-path g1 g2)
+(define (gestalt-subtract g1 g2)
   (gestalt-combine-straight g1 g2
 			    erase-imbalance-handler
-			    matcher-erase-path))
+			    matcher-subtract))
 
 ;; (U 'right-longer 'left-longer) (Listof X) -> (Listof X)
 ;; Asymmetric imbalance handler suitable for use in subtraction operations.
