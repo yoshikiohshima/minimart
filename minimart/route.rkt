@@ -54,6 +54,7 @@
 (require racket/match)
 (require (only-in racket/port call-with-output-string with-output-to-string))
 (require (only-in racket/class object?))
+(require "canonicalize.rkt")
 
 (require rackunit)
 
@@ -175,15 +176,24 @@
 ;; prepending tokens to a Matcher unless there's some possibility it
 ;; can map to one or more Values.
 
+;; Matcher Matcher -> Boolean
+;; Exploits canonicalization to replace an expensive equal? check with eq?.
+(define (requal? a b)
+  (eq? a b))
+
 ;; (Option Value) -> Matcher
 ;; If the argument is #f, returns the empty matcher; otherwise, a success Matcher.
 (define (rsuccess v)
-  (and v (success v)))
+  (and v (canonicalize (success v))))
 
 ;; (U Sigma Wildcard) Matcher -> Matcher
 ;; Prepends e to r, if r is non-empty.
 (define (rseq e r)
-  (if (matcher-empty? r) r (hash e r)))
+  (if (matcher-empty? r) r (canonicalize (hash e r))))
+
+;; [ (U Sigma Wildcard) Matcher ] ... -> Matcher
+(define (rseq-multi . ers)
+  (canonicalize (apply hash ers)))
 
 ;; Matcher -> Matcher
 ;; Prepends the wildcard pseudo-Sigma to r, if r is non-empty.
@@ -194,7 +204,7 @@
 ;; If r is non-empty, returns a matcher that consumes input up to and
 ;; including EOS, then continuing with r.
 (define (rwildseq r)
-  (if (matcher-empty? r) r (wildcard-sequence r)))
+  (if (matcher-empty? r) r (canonicalize (wildcard-sequence r))))
 
 ;; Matcher (U Sigma Wildcard) -> Matcher
 ;; r must be a hashtable matcher. Retrieves the continuation after
@@ -215,7 +225,7 @@
 ;; If the argument is empty, returns the canonical empty matcher;
 ;; otherwise, returns the argument.
 (define (empty-hash-guard h)
-  (and (positive? (hash-count h)) h))
+  (and (positive? (hash-count h)) (canonicalize h)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pattern compilation
@@ -408,18 +418,17 @@
 	   ;; Here we ensure a "minimal" remainder in cases where
 	   ;; after an erasure, a particular key's continuation is the
 	   ;; same as the wildcard's continuation.
-	   ;; TODO: the equal? check may be expensive. If so, how can it be made cheaper?
 	   (cond
 	    [(key-open? key)
 	     (if (and (wildcard-sequence? updated-k)
-		      (equal? (wildcard-sequence-matcher updated-k) w))
+		      (requal? (wildcard-sequence-matcher updated-k) w))
 		 (rupdate acc key #f)
 		 (rupdate acc key updated-k))]
 	    [(key-close? key)
 	     ;; We will check whether this can be removed later, in collapse-wildcard-sequences.
 	     (rupdate acc key updated-k)]
 	    [else
-	     (rupdate acc key (if (equal? updated-k w) #f updated-k))]))
+	     (rupdate acc key (if (requal? updated-k w) #f updated-k))]))
 	 ;; We only need to examine all keys of h1 if w2 nonfalse.
 	 (collapse-wildcard-sequences
 	  (if w2
@@ -455,7 +464,7 @@
 	 (match (set->list (set-remove (hash-keys h) ?))
 	   [(list (? key-close? other-key))
 	    (define k (rlookup h other-key))
-	    (if (equal? k (wildcard-sequence-matcher w))
+	    (if (requal? k (wildcard-sequence-matcher w))
 		w
 		h)]
 	   [_ h])
@@ -906,24 +915,26 @@
       ['() #f]
       [(list "" vj) (rsuccess (jsexpr->success vj))]
       [(list "...)" j1) (rwildseq (walk j1))]
-      [(list (list kjs vjs) ...) (for/hash [(kj kjs) (vj vjs)]
-				   (values (match kj
-					     [(list "__") ?]
-					     [(list "(") SOL]
-					     [(list "#(") SOV]
-					     [(list ")") EOS]
-					     [(list (? string? s))
-					      (match (deserialize-struct-type-name s)
-						[#f (error 'jsexpr->matcher
-							   "Illegal open-parenthesis mark ~v"
-							   kj)]
-						[tn (match (struct-type-name->struct-type tn)
-						      [#f (error 'jsexpr->matcher
-								 "Unexpected struct type ~v"
-								 tn)]
-						      [t t])])]
-					     [other other])
-					   (walk vj)))])))
+      [(list (list kjs vjs) ...)
+       (canonicalize
+	(for/hash [(kj kjs) (vj vjs)]
+	  (values (match kj
+		    [(list "__") ?]
+		    [(list "(") SOL]
+		    [(list "#(") SOV]
+		    [(list ")") EOS]
+		    [(list (? string? s))
+		     (match (deserialize-struct-type-name s)
+		       [#f (error 'jsexpr->matcher
+				  "Illegal open-parenthesis mark ~v"
+				  kj)]
+		       [tn (match (struct-type-name->struct-type tn)
+			     [#f (error 'jsexpr->matcher
+					"Unexpected struct type ~v"
+					tn)]
+			     [t t])])]
+		    [other other])
+		  (walk vj))))])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -937,16 +948,16 @@
   (define Sfoo (set 'foo))
   (define S+ (set '+))
   (define SX (set 'X))
-  (define (E v) (hash EOS (success v)))
-  (check-equal? (pattern->matcher SA 123) (hash 123 (E SA)))
+  (define (E v) (rseq EOS (rsuccess v)))
+  (check-equal? (pattern->matcher SA 123) (rseq 123 (E SA)))
   (check-equal? (pattern->matcher SA (cons 1 2))
-		(hash SOL (hash 1 (hash ILM (hash 2 (hash EOS (E SA)))))))
+		(rseq SOL (rseq 1 (rseq ILM (rseq 2 (rseq EOS (E SA)))))))
   (check-equal? (pattern->matcher SA (cons ? 2))
-		(hash SOL (hash ? (hash ILM (hash 2 (hash EOS (E SA)))))))
-  (check-equal? (pattern->matcher SA (list 1 2)) (hash SOL (hash 1 (hash 2 (hash EOS (E SA))))))
-  (check-equal? (pattern->matcher SA (list ? 2)) (hash SOL (hash ? (hash 2 (hash EOS (E SA))))))
-  (check-equal? (pattern->matcher SA SOL) (hash struct:start-of-list (hash EOS (E SA))))
-  (check-equal? (pattern->matcher SA ?) (hash ? (E SA)))
+		(rseq SOL (rseq ? (rseq ILM (rseq 2 (rseq EOS (E SA)))))))
+  (check-equal? (pattern->matcher SA (list 1 2)) (rseq SOL (rseq 1 (rseq 2 (rseq EOS (E SA))))))
+  (check-equal? (pattern->matcher SA (list ? 2)) (rseq SOL (rseq ? (rseq 2 (rseq EOS (E SA))))))
+  (check-equal? (pattern->matcher SA SOL) (rseq struct:start-of-list (rseq EOS (E SA))))
+  (check-equal? (pattern->matcher SA ?) (rseq ? (E SA)))
   )
 
 (module+ test
@@ -1213,64 +1224,68 @@
 	[(list r) r]
 	[(cons e xs1) (rseq e (walk xs1))])))
 
-  (check-equal? (intersect ? ?) (rwild EAB))
-  (check-equal? (intersect 'a ?) (rseq 'a EAB))
-  (check-equal? (intersect 123 ?) (rseq 123 EAB))
-  (check-equal? (intersect (cons ? 2) (cons 1 ?)) (rseq* SOL 1 ILM 2 EOS EAB))
-  (check-equal? (intersect (list ? 2) (list 1 ?)) (rseq* SOL 1 2 EOS EAB))
-  (check-equal? (intersect (cons 1 2) ?) (rseq* SOL 1 ILM 2 EOS EAB))
-  (check-equal? (intersect (list 1 2) ?) (rseq* SOL 1 2 EOS EAB))
-  (check-equal? (intersect 1 2) #f)
-  (check-equal? (intersect (cons 1 2) (cons ? 2)) (rseq* SOL 1 ILM 2 EOS EAB))
-  (check-equal? (intersect (list 1 2) (list ? 2)) (rseq* SOL 1 2 EOS EAB))
-  (check-equal? (intersect (cons 1 2) (cons 3 2)) #f)
-  (check-equal? (intersect (cons 1 2) (cons 1 3)) #f)
-  (check-equal? (intersect (vector 1 2) (vector 1 2)) (rseq* SOV 1 2 EOS EAB))
-  (check-equal? (intersect (vector 1 2) (vector 1 2 3)) #f)
+  (define (check-requal? actual expected)
+    (check-eq? actual expected))
 
-  (check-equal? (intersect (a 'a) (a 'b)) #f)
-  (check-equal? (intersect (a 'a) (a 'a)) (rseq* struct:a 'a EOS EAB))
-  (check-equal? (intersect (a 'a) (a ?)) (rseq* struct:a 'a EOS EAB))
-  (check-equal? (intersect (a 'a) ?) (rseq* struct:a 'a EOS EAB))
-  (check-equal? (intersect (b 'a) (b 'b)) #f)
-  (check-equal? (intersect (b 'a) (b 'a)) (rseq* struct:b 'a EOS EAB))
-  (check-equal? (intersect (b 'a) (b ?)) (rseq* struct:b 'a EOS EAB))
-  (check-equal? (intersect (b 'a) ?) (rseq* struct:b 'a EOS EAB))
+  (check-requal? (intersect ? ?) (rwild EAB))
+  (check-requal? (intersect 'a ?) (rseq 'a EAB))
+  (check-requal? (intersect 123 ?) (rseq 123 EAB))
+  (check-requal? (intersect (cons ? 2) (cons 1 ?)) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-requal? (intersect (list ? 2) (list 1 ?)) (rseq* SOL 1 2 EOS EAB))
+  (check-requal? (intersect (cons 1 2) ?) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-requal? (intersect (list 1 2) ?) (rseq* SOL 1 2 EOS EAB))
+  (check-requal? (intersect 1 2) #f)
+  (check-requal? (intersect (cons 1 2) (cons ? 2)) (rseq* SOL 1 ILM 2 EOS EAB))
+  (check-requal? (intersect (list 1 2) (list ? 2)) (rseq* SOL 1 2 EOS EAB))
+  (check-requal? (intersect (cons 1 2) (cons 3 2)) #f)
+  (check-requal? (intersect (cons 1 2) (cons 1 3)) #f)
+  (check-requal? (intersect (vector 1 2) (vector 1 2)) (rseq* SOV 1 2 EOS EAB))
+  (check-requal? (intersect (vector 1 2) (vector 1 2 3)) #f)
 
-  (check-equal? (intersect (a 'a) (b 'a)) #f)
+  (check-requal? (intersect (a 'a) (a 'b)) #f)
+  (check-requal? (intersect (a 'a) (a 'a)) (rseq* struct:a 'a EOS EAB))
+  (check-requal? (intersect (a 'a) (a ?)) (rseq* struct:a 'a EOS EAB))
+  (check-requal? (intersect (a 'a) ?) (rseq* struct:a 'a EOS EAB))
+  (check-requal? (intersect (b 'a) (b 'b)) #f)
+  (check-requal? (intersect (b 'a) (b 'a)) (rseq* struct:b 'a EOS EAB))
+  (check-requal? (intersect (b 'a) (b ?)) (rseq* struct:b 'a EOS EAB))
+  (check-requal? (intersect (b 'a) ?) (rseq* struct:b 'a EOS EAB))
+
+  (check-requal? (intersect (a 'a) (b 'a)) #f)
 
   (check-exn #px"Cannot match on hash tables at present"
 	     (lambda ()
-	       (intersect (hash 'a 1 'b ?) (hash 'a ? 'b 2))))
-  ;; (check-equal? (intersect (hash 'a 1 'b ?) (hash 'a ? 'b 2)) (hash 'a 1 'b 2))
-  ;; (check-equal? (intersect (hash 'a 1 'b ?) (hash 'a ?)) (void))
-  ;; (check-equal? (intersect (hash 'a 1 'b ?) (hash 'a 1 'b ?)) (hash 'a 1 'b ?))
-  ;; (check-equal? (intersect (hash 'a 1 'b ?) (hash 'a ? 'c ?)) (void))
+	       (intersect (canonicalize (hash 'a 1 'b ?))
+			  (canonicalize (hash 'a ? 'b 2)))))
+  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ? 'b 2)) (rseq 'a 1 'b 2))
+  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ?)) (void))
+  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a 1 'b ?)) (rseq 'a 1 'b ?))
+  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ? 'c ?)) (void))
 
-  ;; (check-equal? (intersect (hash 'a 1 'b ?) (hash 'a 1 'b (list 2 ?)))
-  ;; 		(hash 'a 1 'b (list 2 ?)))
-  ;; (check-equal? (intersect (hash 'a 1 'b (list ? 3)) (hash 'a 1 'b (list 2 ?)))
-  ;; 		(hash 'a 1 'b (list 2 3)))
+  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a 1 'b (list 2 ?)))
+  ;; 		(rseq 'a 1 'b (list 2 ?)))
+  ;; (check-requal? (intersect (rseq 'a 1 'b (list ? 3)) (rseq 'a 1 'b (list 2 ?)))
+  ;; 		(rseq 'a 1 'b (list 2 3)))
 
-  (let ((H hash))
-    (newline)
-    (printf "Checking that intersection with wildcard is identity-like\n")
-    (define m1 (pretty-print-matcher*
-		(foldr matcher-union (matcher-empty)
-		       (list (pattern->matcher SA (list 'a ?))
-			     (pattern->matcher SB (list 'b ?))
-			     (pattern->matcher SC (list 'b 'c))))))
-    (define m2 (pretty-print-matcher* (pattern->matcher SD ?)))
-    (define mi (pretty-print-matcher* (matcher-intersect m1 m2)))
-    (check-equal? mi
-		  (H SOL (H 'a (H  ? (H EOS (E (set 'A 'D))))
-			    'b (H  ? (H EOS (E (set 'B 'D)))
-				  'c (H EOS (E (set 'B 'C 'D)))))))
-    (check-equal? (pretty-print-matcher*
-		   (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
-		     (matcher-intersect m1 m2)))
-		  m1))
-  )
+		    (let ((H rseq-multi))
+		      (newline)
+		      (printf "Checking that intersection with wildcard is identity-like\n")
+		      (define m1 (pretty-print-matcher*
+				  (foldr matcher-union (matcher-empty)
+					 (list (pattern->matcher SA (list 'a ?))
+					       (pattern->matcher SB (list 'b ?))
+					       (pattern->matcher SC (list 'b 'c))))))
+		      (define m2 (pretty-print-matcher* (pattern->matcher SD ?)))
+		      (define mi (pretty-print-matcher* (matcher-intersect m1 m2)))
+		      (check-requal? mi
+				     (H SOL (H 'a (H  ? (H EOS (E (set 'A 'D))))
+					       'b (H  ? (H EOS (E (set 'B 'D)))
+						      'c (H EOS (E (set 'B 'C 'D)))))))
+		      (check-requal? (pretty-print-matcher*
+				      (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
+					(matcher-intersect m1 m2)))
+				     m1))
+		    )
 
 (module+ test
   (define (matcher-match-matcher-list m1 m2)
@@ -1313,23 +1328,23 @@
 		(list SOL 'a SOC ? EOC EOS EOS))
 
   (parameterize ((matcher-project-success (lambda (v) #t)))
-    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						  (pattern->matcher SB (list 'a 'b)))
-				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t 'a)
-				 (pattern->matcher #t 'b)))
+    (check-requal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a 'b)))
+				    (compile-projection (list 'a (?!))))
+		   (matcher-union (pattern->matcher #t 'a)
+				  (pattern->matcher #t 'b)))
 
-    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						  (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
-				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t 'a)
-				 (pattern->matcher #t (vector 'b 'c 'd))))
+    (check-requal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a (vector 'b 'c 'd))))
+				    (compile-projection (list 'a (?!))))
+		   (matcher-union (pattern->matcher #t 'a)
+				  (pattern->matcher #t (vector 'b 'c 'd))))
 
-    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
-						  (pattern->matcher SB (list 'a (vector 'b ? 'd))))
-				   (compile-projection (list 'a (?!))))
-		  (matcher-union (pattern->matcher #t 'a)
-				 (pattern->matcher #t (vector 'b ? 'd))))
+    (check-requal? (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
+						   (pattern->matcher SB (list 'a (vector 'b ? 'd))))
+				    (compile-projection (list 'a (?!))))
+		   (matcher-union (pattern->matcher #t 'a)
+				  (pattern->matcher #t (vector 'b ? 'd))))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (matcher-union (pattern->matcher SA (list 'a 'a))
@@ -1355,58 +1370,58 @@
 				    (compile-projection (list 'a (?! 'a)))))
 		  (set '(a)))
 
-    (check-equal? (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
-						  (pattern->matcher SB (cons 3 4)))
-				   (compile-projection (cons (?!) (?!))))
-		  (matcher-union (pattern->matcher #t 1 2)
-				 (pattern->matcher #t 3 4)))
+    (check-requal? (matcher-project (matcher-union (pattern->matcher SA (cons 1 2))
+						   (pattern->matcher SB (cons 3 4)))
+				    (compile-projection (cons (?!) (?!))))
+		   (matcher-union (pattern->matcher #t 1 2)
+				  (pattern->matcher #t 3 4)))
 
-    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					  (list (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 1 4))
-						(pattern->matcher SC (cons 3 4))))
-				   (compile-projection (cons (?!) (?!))))
-		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t 1 2)
-			       (pattern->matcher #t 1 4)
-			       (pattern->matcher #t 3 4))))
+    (check-requal? (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SB (cons 1 4))
+						 (pattern->matcher SC (cons 3 4))))
+				    (compile-projection (cons (?!) (?!))))
+		   (foldr matcher-union (matcher-empty)
+			  (list (pattern->matcher #t 1 2)
+				(pattern->matcher #t 1 4)
+				(pattern->matcher #t 3 4))))
 
-    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					  (list (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 1 4))
-						(pattern->matcher SC (cons 3 4))))
-				   (compile-projection (?! (cons ? ?))))
-		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (cons 1 2))
-			       (pattern->matcher #t (cons 1 4))
-			       (pattern->matcher #t (cons 3 4)))))
+    (check-requal? (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SB (cons 1 4))
+						 (pattern->matcher SC (cons 3 4))))
+				    (compile-projection (?! (cons ? ?))))
+		   (foldr matcher-union (matcher-empty)
+			  (list (pattern->matcher #t (cons 1 2))
+				(pattern->matcher #t (cons 1 4))
+				(pattern->matcher #t (cons 3 4)))))
 
-    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					  (list (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 1 4))
-						(pattern->matcher SC (cons 3 4))))
-				   (compile-projection (?! (cons 1 ?))))
-		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t (cons 1 2))
-			       (pattern->matcher #t (cons 1 4)))))
+    (check-requal? (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SB (cons 1 4))
+						 (pattern->matcher SC (cons 3 4))))
+				    (compile-projection (?! (cons 1 ?))))
+		   (foldr matcher-union (matcher-empty)
+			  (list (pattern->matcher #t (cons 1 2))
+				(pattern->matcher #t (cons 1 4)))))
 
-    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					  (list (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 1 4))
-						(pattern->matcher SC (cons 3 4))))
-				   (compile-projection (cons (?! 1) (?!))))
-		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t 1 2)
-			       (pattern->matcher #t 1 4))))
+    (check-requal? (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SB (cons 1 4))
+						 (pattern->matcher SC (cons 3 4))))
+				    (compile-projection (cons (?! 1) (?!))))
+		   (foldr matcher-union (matcher-empty)
+			  (list (pattern->matcher #t 1 2)
+				(pattern->matcher #t 1 4))))
 
-    (check-equal? (matcher-project (foldr matcher-union (matcher-empty)
-					  (list (pattern->matcher SA (cons 1 2))
-						(pattern->matcher SB (cons 1 4))
-						(pattern->matcher SC (cons 3 4))))
-				   (compile-projection (cons (?!) (?! 4))))
-		  (foldr matcher-union (matcher-empty)
-			 (list (pattern->matcher #t 1 4)
-			       (pattern->matcher #t 3 4))))
+    (check-requal? (matcher-project (foldr matcher-union (matcher-empty)
+					   (list (pattern->matcher SA (cons 1 2))
+						 (pattern->matcher SB (cons 1 4))
+						 (pattern->matcher SC (cons 3 4))))
+				    (compile-projection (cons (?!) (?! 4))))
+		   (foldr matcher-union (matcher-empty)
+			  (list (pattern->matcher #t 1 4)
+				(pattern->matcher #t 3 4))))
 
     (check-equal? (matcher-key-set
 		   (matcher-project (foldr matcher-union (matcher-empty)
@@ -1430,10 +1445,10 @@
 				    (compile-projection (cons (?!) (?!)))))
 		  (set '(1 2) '(3 4))))
 
-  (check-equal? (matcher-project (matcher-union (pattern->matcher SA ?)
+  (check-requal? (matcher-project (matcher-union (pattern->matcher SA ?)
 						 (pattern->matcher SB (list 'a)))
-				 (compile-projection (?! (list (list ?)))))
-		(pattern->matcher SA (list (list ?))))
+				  (compile-projection (?! (list (list ?)))))
+		 (pattern->matcher SA (list (list ?))))
 
   (check-equal? (projection->pattern (list 'a 'b)) (list 'a 'b))
   (check-equal? (projection->pattern (list 'a ?)) (list 'a ?))
@@ -1446,18 +1461,18 @@
 (module+ test
   (let ((A (pattern->matcher SA ?))
 	(B (pattern->matcher SB (list (list (list (list 'foo)))))))
-    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
-		  A))
+    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+		   A))
   (let ((A (pattern->matcher SA ?))
 	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
-    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
-		  A))
+    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) B))
+		   A))
   (let ((A (pattern->matcher SA ?))
 	(B (matcher-union (pattern->matcher SB (list (list (list (list 'foo)))))
 			  (pattern->matcher SB (list (list (list (list 'bar))))))))
-    (check-equal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) A))
-		  B)))
+    (check-requal? (pretty-print-matcher* (matcher-erase-path (matcher-union A B) A))
+		   B)))
 
 (module+ test
   (let ((M (foldr matcher-union (matcher-empty)
@@ -1474,18 +1489,18 @@
 			(3 (((")") (((")") ("" ("D")))))))
 			(4 (((")") (((")") ("" ("B"))))))))))))))
     (check-equal? (matcher->jsexpr M (lambda (v) (map symbol->string (set->list v)))) S)
-    (check-equal? (jsexpr->matcher S (lambda (v) (list->set (map string->symbol v)))) M)))
+    (check-requal? (jsexpr->matcher S (lambda (v) (list->set (map string->symbol v)))) M)))
 
 (module+ test
-  (check-equal? (pretty-print-matcher*
-		 (pattern->matcher SA (list 1
-					    (embedded-matcher
-					     (pattern->matcher SB (list 2 3)))
-					    4)))
-		(pattern->matcher SA (list 1 (list 2 3) 4)))
+  (check-requal? (pretty-print-matcher*
+		  (pattern->matcher SA (list 1
+					     (embedded-matcher
+					      (pattern->matcher SB (list 2 3)))
+					     4)))
+		 (pattern->matcher SA (list 1 (list 2 3) 4)))
 
-  (check-equal? (pretty-print-matcher*
-		 (pattern->matcher SA
-				   (list (embedded-matcher (pattern->matcher SB (list 1 2)))
-					 (embedded-matcher (pattern->matcher SC (list 3 4))))))
-		(pattern->matcher SA (list (list 1 2) (list 3 4)))))
+  (check-requal? (pretty-print-matcher*
+		  (pattern->matcher SA
+				    (list (embedded-matcher (pattern->matcher SB (list 1 2)))
+					  (embedded-matcher (pattern->matcher SC (list 3 4))))))
+		 (pattern->matcher SA (list (list 1 2) (list 3 4)))))
