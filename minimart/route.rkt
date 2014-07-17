@@ -108,6 +108,12 @@
 ;; If, in a hashtable matcher, a wild key is present, it is intended
 ;; to catch all and ONLY those keys not otherwise present in the
 ;; table.
+;; INVARIANT: if a key is present in a hashtable, then the
+;;            corresponding value MUST NOT be equal to the wildcard
+;;            continuation, bearing in mind that
+;;             - if the wildcard is absent, it is implicitly #f;
+;;             - (key-open?) keys imply rwildseq of the wild continuation
+;;             - (key-close?) keys imply runwildseq of the wild continuation
 ;; INVARIANT: success only appears right at the end. Never in the middle. Never unbalanced parens. TODO
 ;;            TODO as part of this: figure out whether we can get rid of the seemingly mandatory EOS-success
 ;;                 pattern that always shows up
@@ -206,24 +212,52 @@
 (define (rwildseq r)
   (if (matcher-empty? r) r (canonicalize (wildcard-sequence r))))
 
-;; Matcher (U Sigma Wildcard) -> Matcher
-;; r must be a hashtable matcher. Retrieves the continuation after
-;; accepting key. If key is absent, returns the failing/empty matcher.
-(define (rlookup r key)
-  (hash-ref r key (lambda () #f)))
+;; Matcher -> Matcher
+;; If r is a wildcard-sequence, return the continuation expected after
+;; the wilds and EOS. Otherwise, return the empty/failing matcher.
+(define (runwildseq r)
+  (match r
+    [(wildcard-sequence k) k]
+    [_ #f]))
 
-;; (Option (HashTable (U Sigma Wildcard) Matcher)) (U Sigma Wildcard) Matcher -> Matcher
-;; Updates (installs or removes) a continuation in the Matcher r. r must
-;; be either #f or a hashtable matcher.
-(define (rupdate r key k)
+;; Matcher (U Sigma Wildcard) Matcher -> Matcher
+;; r must be a hashtable matcher. Retrieves the continuation after
+;; accepting key. If key is absent, returns wild-edge-value, modified
+;; depending on key.
+(define (rlookup r key wild-edge-value)
+  (hash-ref r key (lambda ()
+		    (cond
+		     [(key-open? key) (rwildseq wild-edge-value)]
+		     [(key-close? key) (runwildseq wild-edge-value)]
+		     [else wild-edge-value]))))
+
+;; (Option (HashTable (U Sigma Wildcard) Matcher)) Sigma Matcher -> Matcher
+;; Updates (installs or removes) a continuation in the Matcher r. r
+;; must be either #f or a hashtable matcher. key MUST NOT be ?.
+;; Preserves invariant that a key is never added if its continuation
+;; is the same as the wildcard's continuation (which is implicitly #f
+;; if absent, of course).
+(define (rupdate r0 key k)
+  (when (eq? key ?) (error 'rupdate "Internal error: supplied wildcard as key"))
+  (define r (or r0 (hash)))
   (empty-hash-guard
-   (if (matcher-empty? k)
-       (hash-remove (or r (hash)) key)
-       (hash-set (or r (hash)) key k))))
+   (let ((old-wild (hash-ref r ? (lambda () #f))))
+     (if (cond [(key-open? key)
+		(if (wildcard-sequence? k)
+		    (requal? (wildcard-sequence-matcher k) old-wild)
+		    (matcher-empty? k))]
+	       [(key-close? key)
+		(if (wildcard-sequence? old-wild)
+		    (requal? (wildcard-sequence-matcher old-wild) k)
+		    (matcher-empty? k))]
+	       [else
+		(requal? k old-wild)])
+	 (hash-remove r key)
+	 (hash-set r key k)))))
 
 ;; Hash -> Matcher
 ;; If the argument is empty, returns the canonical empty matcher;
-;; otherwise, returns the argument.
+;; otherwise, (canonicalizes and) returns the argument.
 (define (empty-hash-guard h)
   (and (positive? (hash-count h)) (canonicalize h)))
 
@@ -291,182 +325,90 @@
 
 ;; Matcher Matcher -> Matcher
 ;; Computes the union of the multimaps passed in.
-(define matcher-union
-  (let ()
-    (define (walk re1 re2)
-      (match* (re1 re2)
-	[(#f #f) #f]
-	[(#f r) r]
-	[(r #f) r]
-	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
-	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
-	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-	[((success v1) (success v2)) (rsuccess ((matcher-union-successes) v1 v2))]
-	[((? hash? h1) (? hash? h2))
-	 (define w (walk (rlookup h1 ?) (rlookup h2 ?)))
-	 (if w (walk/wildcard w h1 h2) (walk/no-wildcard h1 h2))]))
-    (define (walk/wildcard w h1 h2)
-      (for/fold [(acc (rwild w))]
-	  [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
-	(define k (walk (rlookup h1 key) (rlookup h2 key)))
-	(rupdate acc
-		 key
-		 (cond
-		  [(key-open? key) (walk (rwildseq w) k)]
-		  [(key-close? key) (if (wildcard-sequence? w)
-					(walk (wildcard-sequence-matcher w) k)
-					k)]
-		  [else (walk w k)]))))
-    (define (walk/no-wildcard h1 h2)
-      (define-values (walk-fn smaller-h larger-h)
-	(if (< (hash-count h1) (hash-count h2))
-	    (values walk h1 h2)
-	    (values (flip walk) h2 h1)))
-      (for/fold [(acc larger-h)] [((key k1) (in-hash smaller-h))]
-	(rupdate acc key (walk-fn k1 (rlookup larger-h key)))))
-    walk))
+(define (matcher-union re1 re2)
+  (matcher-recurse re1
+		   re2
+		   matcher-union
+		   (matcher-union-successes)
+		   values
+		   values
+		   values
+		   values))
 
 ;; (A B -> C) -> A B -> B A -> C
 (define ((flip f) a b) (f b a))
 
 ;; Matcher Matcher -> Matcher
 ;; Computes the intersection of the multimaps passed in.
-(define matcher-intersect
-  (let ()
-    ;; INVARIANT: re1 is a part of the original re1, and likewise for
-    ;; re2. This is so that the first arg to combine-success-values
-    ;; always comes from re1, and the second from re2.
-    (define (walk re1 re2)
-      (match* (re1 re2)
-	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
-	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2)]
-	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-	[((success v1) (success v2)) (rsuccess ((matcher-intersect-successes) v1 v2))]
-	[((? hash? h1) (? hash? h2))
-	 (define w1 (rlookup h1 ?))
-	 (define w2 (rlookup h2 ?))
-	 (define w (and w1 w2 (walk w1 w2)))
-	 (define (examine-key acc key)
-	   (rupdate acc
-		    key
-		    (match* ((rlookup h1 key) (rlookup h2 key))
-		      [(#f #f) #f]
-		      [(#f k2) (walk-wild       walk  w1 key k2)]
-		      [(k1 #f) (walk-wild (flip walk) w2 key k1)]
-		      [(k1 k2) (walk k1 k2)])))
-	 ;; If, say, w1 is #f, then we don't need to examine
-	 ;; every key in h2. So there are four cases:
-	 ;;  - both false -> examine the intersection of the key sets
-	 ;;                  (done by enumerating keys in the smaller hash)
-	 ;;  - one nonfalse -> examine only the keys in the other
-	 ;;  - both nonfalse -> examine the union of the key sets
-	 ;; This is important for avoiding examination of the whole
-	 ;; structure when wildcards aren't being used.
-	 (match* (w1 w2)
-	   [(#f #f) (for/fold [(acc #f)] [(key (in-hash-keys (smaller-hash h1 h2)))]
-		      (examine-key acc key))]
-	   [(#f _) (for/fold [(acc #f)] [(key (in-hash-keys h1))] (examine-key acc key))]
-	   [(_ #f) (for/fold [(acc #f)] [(key (in-hash-keys h2))] (examine-key acc key))]
-	   [(_ _) (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
-									   (hash-keys h2))
-								?))]
-		    (examine-key acc key))])]))
-    (define (walk-wild walk-fn w key k)
-      (and w (cond
-	      [(key-open? key) (walk-fn (rwildseq w) k)]
-	      [(key-close? key) (if (wildcard-sequence? w)
-				    (walk-fn (wildcard-sequence-matcher w) k)
-				    #f)]
-	      [else (walk-fn w k)])))
-    (lambda (re1 re2)
-      (match* (re1 re2)
-	[(#f r) #f]
-	[(r #f) #f]
-	[(r1 r2) (walk r1 r2)]))))
+(define (matcher-intersect re1 re2)
+  (matcher-recurse re1
+		   re2
+		   matcher-intersect
+		   (matcher-intersect-successes)
+		   (lambda (r) #f)
+		   (lambda (r) #f)
+		   (lambda (h) #f)
+		   (lambda (h) #f)))
 
 ;; Matcher Matcher -> Matcher
 ;; Removes re2's mappings from re1.
 ;; The combine-successes function should return #f to signal "no remaining success values".
-(define (matcher-subtract original1 original2)
-  (let ()
-    (define (cofinite-pattern)
-      (error 'matcher-subtract "Cofinite pattern required subtracting:\n     ~a\nfrom ~a"
-	     (matcher->pretty-string original2 #:indent 5)
-	     (matcher->pretty-string original1 #:indent 5)))
-    (define (walk r1 r2)
-      (match* (r1 r2)
-	[(#f #f) #f]
-	[(r #f) r]
-	[(#f r) (cofinite-pattern)]
-	[((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (walk r1 r2))]
-	[((wildcard-sequence r1) r2) (cofinite-pattern)]
-	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2))]
-	[((success v1) (success v2)) (rsuccess ((matcher-subtract-successes) v1 v2))]
-	[((? hash? h1) (? hash? h2))
-	 (define w1 (rlookup h1 ?))
-	 (define w2 (rlookup h2 ?))
-	 (define w (walk w1 w2))
-	 (define (examine-key acc key)
-	   (define updated-k (match* ((rlookup h1 key) (rlookup h2 key))
-			       [(#f #f) #f]
-			       [(#f k2) (cofinite-pattern)]
-			       [(k1 #f) (walk-wild key k1 w2)]
-			       [(k1 k2) (walk k1 k2)]))
-	   ;; Here we ensure a "minimal" remainder in cases where
-	   ;; after an erasure, a particular key's continuation is the
-	   ;; same as the wildcard's continuation.
-	   (cond
-	    [(key-open? key)
-	     (if (and (wildcard-sequence? updated-k)
-		      (requal? (wildcard-sequence-matcher updated-k) w))
-		 (rupdate acc key #f)
-		 (rupdate acc key updated-k))]
-	    [(key-close? key)
-	     ;; We will check whether this can be removed later, in collapse-wildcard-sequences.
-	     (rupdate acc key updated-k)]
-	    [else
-	     (rupdate acc key (if (requal? updated-k w) #f updated-k))]))
-	 ;; We only need to examine all keys of h1 if w2 nonfalse.
-	 (collapse-wildcard-sequences
-	  (if w2
-	      (for/fold [(acc (rwild w))] [(key (set-remove (set-union (hash-keys h1)
-								       (hash-keys h2))
-							    ?))]
-		(examine-key acc key))
-	      (for/fold [(acc h1)] [(key (in-hash-keys h2))]
-		(examine-key acc key))))]))
-    (define (walk-wild key k w)
-      (if w
-	  (cond
-	   [(key-open? key) (walk k (rwildseq w))]
-	   [(key-close? key) (if (wildcard-sequence? w)
-				 (walk k (wildcard-sequence-matcher w))
-				 k)]
-	   [else (walk k w)])
-	  k))
-    (walk original1 original2)))
+(define (matcher-subtract re1 re2)
+  (matcher-recurse re1
+		   re2
+		   matcher-subtract
+		   (matcher-subtract-successes)
+		   (lambda (r) #f)
+		   values
+		   (lambda (h) #f)
+		   values))
+
+(define (matcher-recurse re1 re2 f vf left-false right-false right-base left-base)
+  (match* (re1 re2)
+    [(#f r) (left-false r)]
+    [(r #f) (right-false r)]
+    [((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (f r1 r2))]
+    [((wildcard-sequence r1) r2) (f (expand-wildseq r1) r2)]
+    [(r1 (wildcard-sequence r2)) (f r1 (expand-wildseq r2))]
+    [((success v1) (success v2)) (rsuccess (vf v1 v2))]
+    [((? hash? h1) (? hash? h2)) (fold-over-keys h1 h2 f (left-base h1) (right-base h2))]))
+
+(define (fold-over-keys h1 h2 f left-base right-base)
+  (define w1 (rlookup h1 ? #f))
+  (define w2 (rlookup h2 ? #f))
+  (collapse-wildcard-sequences
+   (cond
+    [(and w1 w2)
+     (for/fold [(acc (rwild (f w1 w2)))]
+	 [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
+       (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
+    [w1
+     (for/fold [(acc left-base)] [(key (in-hash-keys h2))]
+       (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
+    [w2
+     (for/fold [(acc right-base)] [(key (in-hash-keys h1))]
+       (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
+    [(< (hash-count h1) (hash-count h2))
+     (for/fold [(acc right-base)] [(key (in-hash-keys h1))]
+       (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
+    [else
+     (for/fold [(acc left-base)] [(key (in-hash-keys h2))]
+       (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))])))
 
 ;; Matcher -> Matcher
-;; Checks for redundant branches in its argument: when a matcher
-;; contains only entries for (EOS -> (wildcard-sequence m')) and
-;; (★ -> (wildcard-sequence m')), it is equivalent to
-;; (wildcard-sequence m') itself. This is in a way the inverse of
+;; When a matcher contains only entries for (EOS -> m') and (★ ->
+;; (wildcard-sequence m')), it is equivalent to (wildcard-sequence m')
+;; itself. Also, if it's just (★ -> (wildcard-sequence m')), that's
+;; equivalent to (wildcard-sequence m'). This is nearly the inverse of
 ;; expand-wildseq.
 (define (collapse-wildcard-sequences m)
   (match m
-    [(? hash? h)
-     (define w (rlookup h ?))
-     (if (and (wildcard-sequence? w)
-	      (= (hash-count h) 2))
-	 (match (set->list (set-remove (hash-keys h) ?))
-	   [(list (? key-close? other-key))
-	    (define k (rlookup h other-key))
-	    (if (requal? k (wildcard-sequence-matcher w))
-		w
-		h)]
-	   [_ h])
-	 h)]
-    [other other]))
+    [(hash-table ((== ?) (and w (wildcard-sequence wk)))
+		 ((? key-close?) k))
+     (if (requal? k wk) w m)]
+    [(hash-table ((== ?) (and w (wildcard-sequence wk))))
+     w]
+    [_ m]))
 
 ;; Sigma -> Boolean
 ;; True iff k represents the start of a compound datum.
@@ -482,17 +424,9 @@
 
 ;; Matcher -> Matcher
 ;; Unrolls the implicit recursion in a wildcard-sequence.
-;; Exploits the fact that (rwildseq r) === (matcher-union (rwild (rwildseq r)) (rseq EOS r)).
 (define (expand-wildseq r)
-  (matcher-union (rwild (rwildseq r))
-		 (rseq EOS r)))
-
-;; Hashtable Hashtable -> Hashtable
-;; Returns the smaller of its arguments.
-(define (smaller-hash h1 h2)
-  (if (< (hash-count h1) (hash-count h2))
-      h1
-      h2))
+  (canonicalize (hash ? (rwildseq r)
+		      EOS r)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Matching single keys into a multimap
@@ -512,50 +446,46 @@
 ;; Matcher, returns the values contained in the success Matcher;
 ;; otherwise, returns failure-result.
 (define (matcher-match-value r v [failure-result (set)])
-  (if (matcher-empty? r)
-      failure-result
-      (let walk ((vs (list v)) (stack '(())) (r r))
-	(define (walk-wild vs stack)
-	  (match (rlookup r ?)
-	    [#f failure-result]
-	    [k (walk vs stack k)]))
-	(match r
-	  [(wildcard-sequence k)
-	   (match stack
-	     ['() failure-result]
-	     [(cons rest stack1) (walk rest stack1 k)])]
-	  [(success result)
-	   (if (and (null? vs)
-		    (null? stack))
-	       result
-	       failure-result)]
-	  [(? hash?)
-	   (match vs
-	     ['()
-	      (match stack
-		['() failure-result]
-		[(cons rest stack1)
-		 (match (rlookup r EOS)
-		   [#f failure-result]
-		   [k (walk rest stack1 k)])])]
-	     [(cons (== ?) rest)
-	      (error 'matcher-match-value "Cannot match wildcard as a value")]
-	     [(cons (cons v1 v2) rest)
-	      (match (rlookup r SOL)
-		[#f (walk-wild rest stack)]
-		[k (walk (cons v1 (transform-list-value v2)) (cons rest stack) k)])]
-	     [(cons (vector vv ...) rest)
-	      (match (rlookup r SOV)
-		[#f (walk-wild rest stack)]
-		[k (walk vv (cons rest stack) k)])]
-	     [(cons (? non-object-struct? s) rest)
-	      (match (rlookup r (struct->struct-type s))
-		[#f (walk-wild rest stack)]
-		[k (walk (cdr (vector->list (struct->vector s))) (cons rest stack) k)])]
-	     [(cons v rest)
-	      (match (rlookup r v)
-		[#f (walk-wild rest stack)]
-		[k (walk rest stack k)])])]))))
+  (let walk ((vs (list v)) (stack '(())) (r r))
+    (match r
+      [#f failure-result]
+      [(wildcard-sequence k)
+       (match stack
+	 ['() failure-result]
+	 [(cons rest stack1) (walk rest stack1 k)])]
+      [(success result)
+       (if (and (null? vs)
+		(null? stack))
+	   result
+	   failure-result)]
+      [(? hash?)
+       (define (get key) (hash-ref r key (lambda () #f)))
+       (match vs
+	 ['()
+	  (match stack
+	    ['() failure-result]
+	    [(cons rest stack1)
+	     (walk rest stack1 (rlookup r EOS (get ?)))])]
+	 [(cons (== ?) rest)
+	  (error 'matcher-match-value "Cannot match wildcard as a value")]
+	 [(cons '() rest)
+	  (match (get SOL)
+	    [#f (walk rest stack (get ?))]
+	    [k (walk '() (cons rest stack) k)])]
+	 [(cons (cons v1 v2) rest)
+	  (match (get SOL)
+	    [#f (walk rest stack (get ?))]
+	    [k (walk (cons v1 (transform-list-value v2)) (cons rest stack) k)])]
+	 [(cons (vector vv ...) rest)
+	  (match (get SOV)
+	    [#f (walk rest stack (get ?))]
+	    [k (walk vv (cons rest stack) k)])]
+	 [(cons (? non-object-struct? s) rest)
+	  (match (get (struct->struct-type s))
+	    [#f (walk rest stack (get ?))]
+	    [k (walk (cdr (vector->list (struct->vector s))) (cons rest stack) k)])]
+	 [(cons v rest)
+	  (walk rest stack (rlookup r v (get ?)))])])))
 
 ;; Matcher Matcher -> Value
 ;;
@@ -563,47 +493,27 @@
 ;; accepts a Matcher serving as *multiple* simultaneously-examined
 ;; keys. Returns the union of all successful values reached by the
 ;; probe.
-(define matcher-match-matcher
-  (let ()
-    (define (walk re1 re2 acc)
-      (match* (re1 re2)
-	[((wildcard-sequence r1) (wildcard-sequence r2)) (walk r1 r2 acc)]
-	[((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2 acc)]
-	[(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2) acc)]
-	[((success v1) (success v2)) ((matcher-match-matcher-successes) v1 v2 acc)]
-	[((? hash? h1) (? hash? h2))
-	 (define w1 (rlookup h1 ?))
-	 (define w2 (rlookup h2 ?))
-	 (define r (if (and w1 w2)
-		       (walk w1 w2 acc)
-		       acc))
-	 (define (examine-key r key)
-	   (match* ((rlookup h1 key) (rlookup h2 key))
-	     [(#f #f) r]
-	     [(#f k2) (walk-wild walk w1 key k2 r)]
-	     [(k1 #f) (walk-wild (lambda (re2 re1 acc) (walk re1 re2 acc)) w2 key k1 r)]
-	     [(k1 k2) (walk k1 k2 r)]))
-	 ;; We optimize as described in matcher-intersect.
-	 (match* (w1 w2)
-	   [(#f #f) (for/fold [(r r)] [(key (in-hash-keys (smaller-hash h1 h2)))] (examine-key r key))]
-	   [(#f _) (for/fold [(r r)] [(key (in-hash-keys h1))] (examine-key r key))]
-	   [(_ #f) (for/fold [(r r)] [(key (in-hash-keys h2))] (examine-key r key))]
-	   [(_ _) (for/fold [(r r)] [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
-		    (examine-key r key))])]))
-    (define (walk-wild walker w key k acc)
-      (if w
-	  (cond
-	   [(key-open? key) (walker (rwildseq w) k acc)]
-	   [(key-close? key) (if (wildcard-sequence? w)
-				 (walker (wildcard-sequence-matcher w) k acc)
-				 acc)]
-	   [else (walker w k acc)])
-	  acc))
-    (lambda (re1 re2)
-      (match* (re1 re2)
-	[(#f r) (matcher-match-matcher-unit)]
-	[(r #f) (matcher-match-matcher-unit)]
-	[(r1 r2) (walk r1 r2 (matcher-match-matcher-unit))]))))
+(define (matcher-match-matcher re1 re2)
+  (let walk ((re1 re1) (re2 re2) (acc (matcher-match-matcher-unit)))
+    (match* (re1 re2)
+      [(#f _) acc]
+      [(_ #f) acc]
+      [((wildcard-sequence r1) (wildcard-sequence r2)) (walk r1 r2 acc)]
+      [((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2 acc)]
+      [(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2) acc)]
+      [((success v1) (success v2)) ((matcher-match-matcher-successes) v1 v2 acc)]
+      [((? hash? h1) (? hash? h2))
+       (define w1 (rlookup h1 ? #f))
+       (define w2 (rlookup h2 ? #f))
+       (define r (walk w1 w2 acc))
+       (for/fold [(r r)]
+	   [(key (cond
+		  [(and w1 w2) (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?)]
+		  [w1 (hash-keys h2)]
+		  [w2 (hash-keys h1)]
+		  [(< (hash-count h1) (hash-count h2)) (hash-keys h1)]
+		  [else (hash-keys h2)]))]
+	 (walk (rlookup h1 key w1) (rlookup h2 key w2) r))])))
 
 ;; Matcher × (Value → Matcher) → Matcher
 ;; Since Matchers accept *sequences* of input values, this appends two
@@ -617,7 +527,8 @@
       [#f #f]
       [(success v) (error 'matcher-append "Ill-formed matcher: ~v" m0)]
       [(wildcard-sequence m1) (rwildseq (walk m1))]
-      [(? hash?) (for/fold [(acc #f)] [((k v) (in-hash m))]
+      [(? hash?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
+		     [((k v) (in-hash m)) #:when (not (eq? k ?))]
 		   (if (and (key-close? k) (success? v))
 		       (matcher-union acc (m-tail-fn (success-value v)))
 		       (rupdate acc k (walk v))))])))
@@ -630,7 +541,9 @@
       [#f #f]
       [(success v) (rsuccess (f v))]
       [(wildcard-sequence m1) (rwildseq (walk m1))]
-      [(? hash?) (for/fold [(acc #f)] [((k v) (in-hash m))] (rupdate acc k (walk v)))])))
+      [(? hash?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
+		     [((k v) (in-hash m)) #:when (not (eq? k ?))]
+		   (rupdate acc k (walk v)))])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Projection
@@ -711,7 +624,7 @@
 	   (match m
 	     [(wildcard-sequence _) (add-wild (walk m k))]
 	     [(? hash?)
-	      (for/fold [(acc (add-wild (walk (rlookup m ?) k)))] [((key mk) (in-hash m))]
+	      (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))] [((key mk) (in-hash m))]
 		(if (eq? key ?)
 		    acc
 		    (add-edge acc key (cond
@@ -728,12 +641,7 @@
 			  [(key-open? sigma) (walk (rwildseq m) k)]
 			  [(key-close? sigma) (walk mk k)]
 			  [else (walk m k)])]
-			[(? hash?)
-			 (matcher-union (walk (rlookup m sigma) k)
-					(cond
-					 [(key-open? sigma) (walk (rwildseq (rlookup m ?)) k)]
-					 [(key-close? sigma) #f]
-					 [else (walk (rlookup m ?) k)]))]
+			[(? hash?) (walk (rlookup m sigma (rlookup m ? #f)) k)]
 			[_ (matcher-empty)]))])))
 
     (define (general-balanced add-wildseq add-wild add-edge m k)
@@ -741,7 +649,7 @@
 	(match m
 	  [(wildcard-sequence mk) (add-wildseq (k mk))]
 	  [(? hash?)
-	   (for/fold [(acc (add-wild (walk (rlookup m ?) k)))] [((key mk) (in-hash m))]
+	   (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))] [((key mk) (in-hash m))]
 	     (if (eq? key ?)
 		 acc
 		 (add-edge acc key (cond
@@ -846,8 +754,8 @@
       [#f
        (d "::: no further matches possible")]
       [(wildcard-sequence k)
-       (d "...>")
-       (walk (+ i 4) k)]
+       (d " ...>")
+       (walk (+ i 5) k)]
       [(success vs)
        (d "{")
        (d vs)
@@ -1076,6 +984,9 @@
     (matcher-union (foldr matcher-union (matcher-empty) ps)
 		   (pattern->matcher S+ (list 'Z (list ? '- ?)))))
 
+  (newline)
+  (printf "Plain bigdemo\n")
+
   (void (pretty-print-matcher* (bigdemo)))
   (check-matches
    (bigdemo)
@@ -1087,7 +998,6 @@
    (list 'Z) ""
    (list 'Z 'x) "Z"
    (list 'Z (list)) "Z"
-   (list 'Z (list '-)) "Z"
    (list 'Z (list '-)) "Z"
    (list 'Z (list '- '-)) "Z"
    (list 'Z (list '- '- '-)) "Z+"
@@ -1106,8 +1016,14 @@
   ;; 		 (list 'b 'c 'd 'e 'f 'a) ""
   ;; 		 3 "")
 
+  (newline)
+  (printf "bigdemo with matcher-intersect 'a -> SA | 'b -> SB\n")
+
   (void (pretty-print-matcher* (matcher-intersect (pattern->matcher SA (list 'a))
 						  (pattern->matcher SB (list 'b)))))
+
+  (newline)
+  (printf "various unions and intersections\n")
 
   (let ((r1 (matcher-union (pattern->matcher SA (list  ? 'b))
 			   (pattern->matcher SA (list  ? 'c))))
@@ -1121,7 +1037,18 @@
     (pretty-print-matcher* (matcher-intersect r2 r2))
     (void))
 
-  (void (pretty-print-matcher* (matcher-intersect (bigdemo) (pattern->matcher SX (list 'm 'n)))))
+  (newline)
+  (printf "bigdemo with matcher-intersect ('m 'n) -> SX\n")
+
+  (check-matches
+   (pretty-print-matcher* (matcher-intersect (bigdemo) (pattern->matcher SX (list 'm 'n))))
+   (list 'm '-) ""
+   (list 'm 'n) "mX"
+   (list 'x '-) ""
+   (list 'x 'n) "")
+
+  (newline)
+  (printf "bigdemo with matcher-intersect ('Z ?) -> SX\n")
 
   (check-matches
    (pretty-print-matcher* (matcher-intersect (bigdemo) (pattern->matcher SX (list 'Z ?))))
@@ -1134,13 +1061,15 @@
    (list 'Z 'x) "XZ"
    (list 'Z (list)) "XZ"
    (list 'Z (list '-)) "XZ"
-   (list 'Z (list '-)) "XZ"
    (list 'Z (list '- '-)) "XZ"
    (list 'Z (list '- '- '-)) "XZ+"
    (list 'Z (list '- '- '- '-)) "XZ"
    (list 'Z (list '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '-)) "XZ"
    (list 'Z '((()) - -)) "XZ+"
    (list '? (list '- '- '-)) "")
+
+  (newline)
+  (printf "bigdemo with matcher-intersect ('Z ?) -> SX and changed success function\n")
 
   (check-matches
    (pretty-print-matcher* (parameterize ((matcher-intersect-successes (lambda (a b) b)))
@@ -1154,13 +1083,15 @@
    (list 'Z 'x) "X"
    (list 'Z (list)) "X"
    (list 'Z (list '-)) "X"
-   (list 'Z (list '-)) "X"
    (list 'Z (list '- '-)) "X"
    (list 'Z (list '- '- '-)) "X"
    (list 'Z (list '- '- '- '-)) "X"
    (list 'Z (list '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '-)) "X"
    (list 'Z '((()) - -)) "X"
    (list '? (list '- '- '-)) "")
+
+  (newline)
+  (printf "bigdemo with matcher-intersect ? -> SX and changed success function\n")
 
   (check-matches
    (pretty-print-matcher* (parameterize ((matcher-intersect-successes (lambda (a b) b)))
@@ -1174,13 +1105,15 @@
    (list 'Z 'x) "X"
    (list 'Z (list)) "X"
    (list 'Z (list '-)) "X"
-   (list 'Z (list '-)) "X"
    (list 'Z (list '- '-)) "X"
    (list 'Z (list '- '- '-)) "X"
    (list 'Z (list '- '- '- '-)) "X"
    (list 'Z (list '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '- '-)) "X"
    (list 'Z '((()) - -)) "X"
    (list '? (list '- '- '-)) "")
+
+  (newline)
+  (printf "subtraction basics\n")
 
   (let* ((r1 (pattern->matcher SA (list  ? 'b)))
 	 (r2 (pattern->matcher SB (list 'a  ?)))
@@ -1201,6 +1134,7 @@
     (pretty-print-matcher* r12)
     (pretty-print-matcher* (matcher-subtract r12 r1))
     (pretty-print-matcher* (matcher-subtract r12 r2))
+    (pretty-print-matcher* (matcher-subtract r12 (pattern->matcher SA ?)))
     (void))
 
   )
@@ -1221,7 +1155,7 @@
 	[(list r) r]
 	[(cons e xs1) (rseq e (walk xs1))])))
 
-  (define (check-requal? actual expected)
+  (define-syntax-rule (check-requal? actual expected)
     (check-eq? actual expected))
 
   (check-requal? (intersect ? ?) (rwild EAB))
@@ -1456,6 +1390,9 @@
   )
 
 (module+ test
+  (newline)
+  (printf "Checking that subtraction from union is identity-like\n")
+
   (let ((A (pattern->matcher SA ?))
 	(B (pattern->matcher SB (list (list (list (list 'foo)))))))
     (check-requal? (pretty-print-matcher* (matcher-subtract (matcher-union A B) B))
@@ -1501,3 +1438,14 @@
 				    (list (embedded-matcher (pattern->matcher SB (list 1 2)))
 					  (embedded-matcher (pattern->matcher SC (list 3 4))))))
 		 (pattern->matcher SA (list (list 1 2) (list 3 4)))))
+
+(module+ test
+  (void
+   (pretty-print-matcher* (matcher-union (rwild (rsuccess SA))
+					 (rseq-multi ? (rsuccess SB)
+						     3 (rsuccess SC))))))
+
+(module+ test
+  (void
+   (pretty-print-matcher* (matcher-union (pattern->matcher SA ?)
+					 (pattern->matcher SB (list ? '- ?))))))
