@@ -4,7 +4,7 @@
 ;;
 ;; Modified by Tony Garnock-Jones, July 2014:
 ;;  - trees are hashconsed
-;;  - sorted-map-size is made constant-time (TODO)
+;;  - sorted-map-size is made constant-time
 
 (provide (struct-out sorted-map)
 	 sorted-map-empty
@@ -20,7 +20,8 @@
 	 sorted-map-delete)
 
 (require "canonicalize.rkt")
-  
+(require "memoize.rkt")
+
 ; A purely functional sorted-map library.
 
 ; Provides logarithmic insert, update, get & delete.
@@ -323,14 +324,16 @@
 
 
 ; Returns the size of the sorted map:
-;; tonyg 20140718 TODO: make this O(1) for every smap
-(define (sorted-map-size smap)
-  (match smap
-    [(T! l r)   (+ 1 (sorted-map-size l) 
-                     (sorted-map-size r))]
-    [(L!)           0]))
+;; tonyg 20140718 this is memoized to run in O(1) for every smap
+(define sorted-map-size
+  (memoize1
+   (lambda (smap)
+     (match smap
+       [(T! l r)   (+ 1 (sorted-map-size l)
+		        (sorted-map-size r))]
+       [(L!)       0]))))
 
-  
+
 ; Returns the maxium (key . value) pair:
 (define/match (sorted-map-max node)
   [(T! _ k v (L!))   (cons k v)]
