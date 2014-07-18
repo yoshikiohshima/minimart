@@ -17,10 +17,13 @@
 	 sorted-map-get
 	 sorted-map-size
 	 sorted-map-max
-	 sorted-map-delete)
+	 sorted-map-delete
+	 sorted-map-keys
+	 )
 
 (require "canonicalize.rkt")
 (require "memoize.rkt")
+(require racket/set)
 
 ; A purely functional sorted-map library.
 
@@ -445,3 +448,11 @@
    
   ; Delete the key, and color the new root black:
   (blacken (del node)))
+
+
+;; tonyg 20140718 Retrieve a set of the keys of smap
+(define (sorted-map-keys smap [empty-set (set)])
+  (let walk ((node smap) (acc empty-set))
+    (match node
+      [(T! l k v r) (walk l (set-add (walk r acc) k))]
+      [(L _) acc])))
