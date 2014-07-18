@@ -57,6 +57,7 @@
                clause ...))]))
 
 ; A form for matching the result of a comparison:
+;; tonyg 20140718: changed to use the order? convention from data/order
 (define-syntax switch-compare 
   (syntax-rules (= < >)
     [(_ (cmp v1 v2)
@@ -65,10 +66,10 @@
         [> action3 ...])
      ; =>
      (let ((dir (cmp v1 v2)))
-       (cond
-         [(< dir 0) action1 ...]
-         [(= dir 0) action2 ...]
-         [(> dir 0) action3 ...]))]))
+       (case dir
+         [(<) action1 ...]
+         [(=) action2 ...]
+         [(>) action3 ...]))]))
     
 ;; tonyg 20140718: for hash-consing, we have to be able to compare
 ;; trees using equal?, which necessitates use of #:transparent in our
@@ -297,11 +298,10 @@
       [(`((,k1 . ,v1) . ,rest1)
         `((,k2 . ,v2) . ,rest2))
        ; =>
-       (let ((dir (cmp k1 k2)))
-         (cond
-           [(< dir 0) #f]
-           [(= dir 0) (and (by v1 v2) (compare-alists rest1 rest2))]
-           [else      (compare-alists amap1 rest2)]))]
+       (switch-compare (cmp k1 k2)
+          [< #f]
+          [= (and (by v1 v2) (compare-alists rest1 rest2))]
+          [> (compare-alists amap1 rest2)])]
       
       [('() '())   #t]
       
