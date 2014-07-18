@@ -19,6 +19,7 @@
 	 sorted-map-max
 	 sorted-map-delete
 	 sorted-map-keys
+	 sorted-map-values
 	 )
 
 (require "canonicalize.rkt")
@@ -455,4 +456,11 @@
   (let walk ((node smap) (acc empty-set))
     (match node
       [(T! l k v r) (walk l (set-add (walk r acc) k))]
+      [(L _) acc])))
+
+;; tonyg 20140718 Retrieve a list of the values of smap
+(define (sorted-map-values smap)
+  (let walk ((node smap) (acc '()))
+    (match node
+      [(T! l k v r) (walk l (cons v (walk r acc)))]
       [(L _) acc])))
