@@ -64,8 +64,20 @@
 (define (treap-empty? t) (zero? (treap-size t)))
 
 (define (default-priority key)
-  (bitwise-xor 609512461 ;; a random number
-               (equal-hash-code key)))
+  ;; Loosely based on a restriction of murmur32 v3
+  (define c1 #xcc9e2d51)
+  (define c2 #x1b873593)
+  (define r1 15)
+  (define r2 13)
+  (define m 5)
+  (define n #xe6546b64)
+  (define k (* (equal-hash-code key) c1))
+  (define hash0 (* c2 (bitwise-ior (arithmetic-shift k r1) (arithmetic-shift k (- 32 r1)))))
+  (define hash1
+    (+ n (* m (bitwise-ior (arithmetic-shift hash0 r2) (arithmetic-shift hash0 (- 32 r2))))))
+  (define hash2 (* #x85ebca6b (bitwise-xor hash1 (arithmetic-shift hash1 -16))))
+  (define hash3 (* #xc2b2ae35 (bitwise-xor hash2 (arithmetic-shift hash1 -13))))
+  (bitwise-xor hash2 (arithmetic-shift hash1 -16)))
 
 (define (treap-insert t key value [priority (default-priority key)])
   (match-define (treap order root oldsize) t)
