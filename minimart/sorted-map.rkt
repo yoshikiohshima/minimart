@@ -18,6 +18,7 @@
 	 sorted-map-size
 	 sorted-map-max
 	 sorted-map-delete
+	 sorted-map-has-key?
 	 sorted-map-keys
 	 sorted-map-values
 	 )
@@ -450,6 +451,17 @@
   ; Delete the key, and color the new root black:
   (blacken (del node)))
 
+
+;; tonyg 20140718 True iff key is in node
+(define (sorted-map-has-key? node key)
+  (let walk ((node node))
+    (match node
+      [(L!)    #f]
+      [(T cmp c l k v r)
+       (switch-compare (cmp key k)
+	  [<   (walk l)]
+	  [=   #t]
+	  [>   (walk r)])])))
 
 ;; tonyg 20140718 Retrieve a set of the keys of smap
 (define (sorted-map-keys smap [empty-set (set)])
