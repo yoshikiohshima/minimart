@@ -402,13 +402,27 @@
 ;; equivalent to (wildcard-sequence m'). This is nearly the inverse of
 ;; expand-wildseq.
 (define (collapse-wildcard-sequences m)
-  (match m
-    [(hash-table ((== ?) (and w (wildcard-sequence wk)))
-		 ((? key-close?) k))
-     (if (requal? k wk) w m)]
-    [(hash-table ((== ?) (and w (wildcard-sequence wk))))
-     w]
-    [_ m]))
+  (if (hash? m)
+      (case (hash-count m)
+	[(2)
+	 (if (and (hash-has-key? m ?)
+		  (hash-has-key? m EOS))
+	     (let ((w (hash-ref m ?))
+		   (k (hash-ref m EOS)))
+	       (if (and (wildcard-sequence? w)
+			(requal? (wildcard-sequence-matcher w) k))
+		   w
+		   m))
+	     m)]
+	[(1)
+	 (if (hash-has-key? m ?)
+	     (let ((w (hash-ref m ?)))
+	       (if (wildcard-sequence? w)
+		   w
+		   m))
+	     m)]
+	[else m])
+      m))
 
 ;; Sigma -> Boolean
 ;; True iff k represents the start of a compound datum.
