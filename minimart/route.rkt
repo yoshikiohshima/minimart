@@ -55,6 +55,8 @@
 (require (only-in racket/port call-with-output-string with-output-to-string))
 (require (only-in racket/class object?))
 (require "canonicalize.rkt")
+(require "treap.rkt")
+(require data/order)
 
 (require rackunit)
 
@@ -102,13 +104,13 @@
 ;; - #f, indicating no further matches possible
 ;; - (success Any), representing a successful match (if the end of
 ;;   the input has been reached)
-;; - (HashTable (U Sigma Wildcard) Matcher), {TODO}
-;; TODO::: reimplement to use (ordinary-state (Option Matcher) (HashTable Sigma Matcher)), {TODO}
+;; - (Treap (U Sigma Wildcard) Matcher), {TODO}
+;; TODO::: reimplement to use (ordinary-state (Option Matcher) (Treap Sigma Matcher)), {TODO}
 ;; - (wildcard-sequence Matcher), {TODO}
-;; If, in a hashtable matcher, a wild key is present, it is intended
+;; If, in a treap matcher, a wild key is present, it is intended
 ;; to catch all and ONLY those keys not otherwise present in the
 ;; table.
-;; INVARIANT: if a key is present in a hashtable, then the
+;; INVARIANT: if a key is present in a treap, then the
 ;;            corresponding value MUST NOT be equal to the wildcard
 ;;            continuation, bearing in mind that
 ;;             - if the wildcard is absent, it is implicitly #f;
@@ -127,7 +129,7 @@
 ;;  - ILM, signifying the transition into the cdr position of a pair
 ;;  - EOS, signifying the notional close-paren at the end of a compound.
 ;;  - any other value, representing itself.
-;; N.B. hash-tables cannot be Sigmas at present.
+;; N.B. treaps cannot be Sigmas at present.
 (define-singleton-struct SOL start-of-list "<")
 (define-singleton-struct SOV start-of-vector "<vector")
 (define-singleton-struct ILM improper-list-marker "|")
@@ -162,8 +164,8 @@
   (or (eq? x #f)
       (success? x)
       (wildcard-sequence? x)
-      (and (hash? x)
-	   (for/and ([v (in-hash-values x)])
+      (and (treap? x)
+	   (for/and ([v (treap-values x)])
 	     (matcher? v)))))
 
 ;; -> Matcher
@@ -192,14 +194,33 @@
 (define (rsuccess v)
   (and v (canonicalize (success v))))
 
+;; Order for sigmas
+(define (sigma-order a b)
+  (define sta? (struct-type? a))
+  (define stb? (struct-type? b))
+  (cond
+   [(and sta? stb?) (datum-order (struct-type-name a) (struct-type-name b))]
+   [sta? '<]
+   [stb? '>]
+   [else (datum-order a b)]))
+
+;; (Treap (U Sigma Wildcard) Matcher)
+;; The empty branch-matcher
+(define empty-smap (treap-empty sigma-order))
+
 ;; (U Sigma Wildcard) Matcher -> Matcher
 ;; Prepends e to r, if r is non-empty.
 (define (rseq e r)
-  (if (matcher-empty? r) r (canonicalize (hash e r))))
+  (if (matcher-empty? r)
+      r
+      (treap-insert empty-smap e r)))
 
 ;; [ (U Sigma Wildcard) Matcher ] ... -> Matcher
 (define (rseq-multi . ers)
-  (canonicalize (apply hash ers)))
+  (let walk ((ers ers))
+    (match ers
+      [(list* e r rest) (treap-insert (walk rest) e r)]
+      [(list) empty-smap])))
 
 ;; Matcher -> Matcher
 ;; Prepends the wildcard pseudo-Sigma to r, if r is non-empty.
@@ -221,27 +242,27 @@
     [_ #f]))
 
 ;; Matcher (U Sigma Wildcard) Matcher -> Matcher
-;; r must be a hashtable matcher. Retrieves the continuation after
+;; r must be a treap matcher. Retrieves the continuation after
 ;; accepting key. If key is absent, returns wild-edge-value, modified
 ;; depending on key.
 (define (rlookup r key wild-edge-value)
-  (hash-ref r key (lambda ()
-		    (cond
-		     [(key-open? key) (rwildseq wild-edge-value)]
-		     [(key-close? key) (runwildseq wild-edge-value)]
-		     [else wild-edge-value]))))
+  (treap-get r key (lambda ()
+			  (cond
+			   [(key-open? key) (rwildseq wild-edge-value)]
+			   [(key-close? key) (runwildseq wild-edge-value)]
+			   [else wild-edge-value]))))
 
-;; (Option (HashTable (U Sigma Wildcard) Matcher)) Sigma Matcher -> Matcher
+;; (Option (Treap (U Sigma Wildcard) Matcher)) Sigma Matcher -> Matcher
 ;; Updates (installs or removes) a continuation in the Matcher r. r
-;; must be either #f or a hashtable matcher. key MUST NOT be ?.
+;; must be either #f or a treap matcher. key MUST NOT be ?.
 ;; Preserves invariant that a key is never added if its continuation
 ;; is the same as the wildcard's continuation (which is implicitly #f
 ;; if absent, of course).
 (define (rupdate r0 key k)
   (when (eq? key ?) (error 'rupdate "Internal error: supplied wildcard as key"))
-  (define r (or r0 (hash)))
-  (empty-hash-guard
-   (let ((old-wild (hash-ref r ? (lambda () #f))))
+  (define r (or r0 empty-smap))
+  (empty-smap-guard
+   (let ((old-wild (treap-get r ? (lambda () #f))))
      (if (cond [(key-open? key)
 		(if (wildcard-sequence? k)
 		    (requal? (wildcard-sequence-matcher k) old-wild)
@@ -252,14 +273,14 @@
 		    (matcher-empty? k))]
 	       [else
 		(requal? k old-wild)])
-	 (hash-remove r key)
-	 (hash-set r key k)))))
+	 (treap-delete r key)
+	 (treap-insert r key k)))))
 
-;; Hash -> Matcher
+;; Treap -> Matcher
 ;; If the argument is empty, returns the canonical empty matcher;
-;; otherwise, (canonicalizes and) returns the argument.
-(define (empty-hash-guard h)
-  (and (positive? (hash-count h)) (canonicalize h)))
+;; otherwise, returns the argument.
+(define (empty-smap-guard h)
+  (and (positive? (treap-size h)) h))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pattern compilation
@@ -285,13 +306,13 @@
       [(cons p1 p2) (rseq SOL (walk p1 (walk-pair-chain p2 acc)))]
       [(? vector? v) (rseq SOV (vector-foldr walk (rseq EOS acc) v))]
       [(embedded-matcher m) (matcher-append m (lambda (_mv) acc))]
+      ;; TODO: consider options for treating treaps as compounds
+      ;; rather than (useless) atoms
+      [(? treap?) (error 'pattern->matcher "Cannot match on treaps at present")]
       [(? non-object-struct?)
        (rseq (struct->struct-type p)
 	     (walk-pair-chain (cdr (vector->list (struct->vector p)))
 			      acc))]
-      ;; TODO: consider options for treating hash tables as compounds
-      ;; rather than (useless) atoms
-      [(? hash?) (error 'pattern->matcher "Cannot match on hash tables at present")]
       [other (rseq other acc)]))
 
   (walk-pair-chain ps0 (rsuccess v)))
@@ -371,7 +392,8 @@
     [((wildcard-sequence r1) r2) (f (expand-wildseq r1) r2)]
     [(r1 (wildcard-sequence r2)) (f r1 (expand-wildseq r2))]
     [((success v1) (success v2)) (rsuccess (vf v1 v2))]
-    [((? hash? h1) (? hash? h2)) (fold-over-keys h1 h2 f (left-base h1) (right-base h2))]))
+    [((? treap? h1) (? treap? h2))
+     (fold-over-keys h1 h2 f (left-base h1) (right-base h2))]))
 
 (define (fold-over-keys h1 h2 f left-base right-base)
   (define w1 (rlookup h1 ? #f))
@@ -380,43 +402,45 @@
    (cond
     [(and w1 w2)
      (for/fold [(acc (rwild (f w1 w2)))]
-	 [(key (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?))]
+	 [(key (set-remove (set-union (treap-keys h1) (treap-keys h2)) ?))]
        (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
     [w1
-     (for/fold [(acc left-base)] [(key (in-hash-keys h2))]
+     (for/fold [(acc left-base)] [(key (treap-keys h2))]
        (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
     [w2
-     (for/fold [(acc right-base)] [(key (in-hash-keys h1))]
+     (for/fold [(acc right-base)] [(key (treap-keys h1))]
        (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
-    [(< (hash-count h1) (hash-count h2))
-     (for/fold [(acc right-base)] [(key (in-hash-keys h1))]
+    [(< (treap-size h1) (treap-size h2))
+     (for/fold [(acc right-base)] [(key (treap-keys h1))]
        (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))]
     [else
-     (for/fold [(acc left-base)] [(key (in-hash-keys h2))]
+     (for/fold [(acc left-base)] [(key (treap-keys h2))]
        (rupdate acc key (f (rlookup h1 key w1) (rlookup h2 key w2))))])))
 
 ;; Matcher -> Matcher
 ;; When a matcher contains only entries for (EOS -> m') and (★ ->
 ;; (wildcard-sequence m')), it is equivalent to (wildcard-sequence m')
-;; itself. Also, if it's just (★ -> (wildcard-sequence m')), that's
-;; equivalent to (wildcard-sequence m'). This is nearly the inverse of
-;; expand-wildseq.
+;; itself. This is the inverse of expand-wildseq.
+;;
+;; In addition, we rewrite (★ -> (wildcard-sequence m')) to
+;; (wildcard-sequence m'), since matcher-match-value will fall back to
+;; ★ if EOS is missing, and rlookup adjusts appropriately.
 (define (collapse-wildcard-sequences m)
-  (if (hash? m)
-      (case (hash-count m)
+  (if (treap? m)
+      (case (treap-size m)
 	[(2)
-	 (if (and (hash-has-key? m ?)
-		  (hash-has-key? m EOS))
-	     (let ((w (hash-ref m ?))
-		   (k (hash-ref m EOS)))
+	 (if (and (treap-has-key? m ?)
+		  (treap-has-key? m EOS))
+	     (let ((w (treap-get m ?))
+		   (k (treap-get m EOS)))
 	       (if (and (wildcard-sequence? w)
 			(requal? (wildcard-sequence-matcher w) k))
 		   w
 		   m))
 	     m)]
 	[(1)
-	 (if (hash-has-key? m ?)
-	     (let ((w (hash-ref m ?)))
+	 (if (treap-has-key? m ?)
+	     (let ((w (treap-get m ?)))
 	       (if (wildcard-sequence? w)
 		   w
 		   m))
@@ -439,8 +463,7 @@
 ;; Matcher -> Matcher
 ;; Unrolls the implicit recursion in a wildcard-sequence.
 (define (expand-wildseq r)
-  (canonicalize (hash ? (rwildseq r)
-		      EOS r)))
+  (treap-insert (treap-insert empty-smap ? (rwildseq r)) EOS r))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Matching single keys into a multimap
@@ -472,8 +495,8 @@
 		(null? stack))
 	   result
 	   failure-result)]
-      [(? hash?)
-       (define (get key) (hash-ref r key (lambda () #f)))
+      [(? treap?)
+       (define (get key) (treap-get r key (lambda () #f)))
        (match vs
 	 ['()
 	  (match stack
@@ -512,17 +535,17 @@
       [((wildcard-sequence r1) r2) (walk (expand-wildseq r1) r2 acc)]
       [(r1 (wildcard-sequence r2)) (walk r1 (expand-wildseq r2) acc)]
       [((success v1) (success v2)) ((matcher-match-matcher-successes) v1 v2 acc)]
-      [((? hash? h1) (? hash? h2))
+      [((? treap? h1) (? treap? h2))
        (define w1 (rlookup h1 ? #f))
        (define w2 (rlookup h2 ? #f))
        (define r (walk w1 w2 acc))
        (for/fold [(r r)]
 	   [(key (cond
-		  [(and w1 w2) (set-remove (set-union (hash-keys h1) (hash-keys h2)) ?)]
-		  [w1 (hash-keys h2)]
-		  [w2 (hash-keys h1)]
-		  [(< (hash-count h1) (hash-count h2)) (hash-keys h1)]
-		  [else (hash-keys h2)]))]
+		  [(and w1 w2) (set-remove (set-union (treap-keys h1) (treap-keys h2)) ?)]
+		  [w1 (treap-keys h2)]
+		  [w2 (treap-keys h1)]
+		  [(< (treap-size h1) (treap-size h2)) (treap-keys h1)]
+		  [else (treap-keys h2)]))]
 	 (walk (rlookup h1 key w1) (rlookup h2 key w2) r))])))
 
 ;; Matcher × (Value → Matcher) → Matcher
@@ -537,11 +560,12 @@
       [#f #f]
       [(success v) (error 'matcher-append "Ill-formed matcher: ~v" m0)]
       [(wildcard-sequence m1) (rwildseq (walk m1))]
-      [(? hash?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
-		     [((k v) (in-hash m)) #:when (not (eq? k ?))]
-		   (if (and (key-close? k) (success? v))
-		       (matcher-union acc (m-tail-fn (success-value v)))
-		       (rupdate acc k (walk v))))])))
+      [(? treap?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
+			   [(kv (treap-to-alist m)) #:when (not (eq? (car kv) ?))]
+			 (match-define (cons k v) kv)
+			 (if (and (key-close? k) (success? v))
+			     (matcher-union acc (m-tail-fn (success-value v)))
+			     (rupdate acc k (walk v))))])))
 
 ;; Matcher (Value -> (Option Value)) -> Matcher
 ;; Maps f over success values in m.
@@ -551,9 +575,9 @@
       [#f #f]
       [(success v) (rsuccess (f v))]
       [(wildcard-sequence m1) (rwildseq (walk m1))]
-      [(? hash?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
-		     [((k v) (in-hash m)) #:when (not (eq? k ?))]
-		   (rupdate acc k (walk v)))])))
+      [(? treap?) (for/fold [(acc (rwild (walk (rlookup m ? #f))))]
+			   [(kv (treap-to-alist m)) #:when (not (eq? (car kv) ?))]
+			 (rupdate acc (car kv) (walk (cdr kv))))])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Projection
@@ -575,12 +599,12 @@
       [(cons p1 p2) (cons SOL (walk p1 (walk-pair-chain p2 acc)))]
       [(? vector? v) (cons SOV (vector-foldr walk (cons EOS acc) v))]
       [(embedded-matcher m) (error 'compile-projection "Cannot embed matcher in projection")]
+      ;; TODO: consider options for treating treaps as compounds rather than (useless) atoms
+      [(? treap?) (error 'compile-projection "Cannot match on treaps at present")]
       [(? non-object-struct?)
        (cons (struct->struct-type p)
 	     (walk-pair-chain (cdr (vector->list (struct->vector p)))
 			      acc))]
-      ;; TODO: consider options for treating hash tables as compounds rather than (useless) atoms
-      [(? hash?) (error 'compile-projection "Cannot match on hash tables at present")]
       [other (cons other acc)]))
 
   (walk-pair-chain ps0 '()))
@@ -598,12 +622,12 @@
       [(capture sub) sub] ;; TODO: maybe enforce non-nesting here too?
       [(cons p1 p2) (cons (walk p1) (walk p2))]
       [(? vector? v) (for/vector [(e (in-vector v))] (walk e))]
+      ;; TODO: consider options for treating treaps as compounds
+      ;; rather than (useless) atoms
+      [(? treap?) (error 'projection->pattern "Cannot match on treaps at present")]
       [(? non-object-struct?)
        (apply (struct-type-make-constructor (struct->struct-type p))
 	      (map walk (cdr (vector->list (struct->vector p)))))]
-      ;; TODO: consider options for treating hash tables as compounds
-      ;; rather than (useless) atoms
-      [(? hash?) (error 'projection->pattern "Cannot match on hash tables at present")]
       [other other])))
 
 ;; Matcher × CompiledProjection -> Matcher
@@ -633,14 +657,14 @@
 	  [(cons (== ?) k)
 	   (match m
 	     [(wildcard-sequence _) (add-wild (walk m k))]
-	     [(? hash?)
-	      (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))] [((key mk) (in-hash m))]
-		(if (eq? key ?)
-		    acc
-		    (add-edge acc key (cond
-				       [(key-open? key) (balanced mk (lambda (mk) (walk mk k)))]
-				       [(key-close? key) #f]
-				       [else (walk mk k)]))))]
+	     [(? treap?)
+	      (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))]
+		  [(key-mk (treap-to-alist m)) #:when (not (eq? (car key-mk) ?))]
+		(match-define (cons key mk) key-mk)
+		(add-edge acc key (cond
+				   [(key-open? key) (balanced mk (lambda (mk) (walk mk k)))]
+				   [(key-close? key) #f]
+				   [else (walk mk k)])))]
 	     [_ (matcher-empty)])]
 
 	  [(cons sigma k)
@@ -651,21 +675,21 @@
 			  [(key-open? sigma) (walk (rwildseq m) k)]
 			  [(key-close? sigma) (walk mk k)]
 			  [else (walk m k)])]
-			[(? hash?) (walk (rlookup m sigma (rlookup m ? #f)) k)]
+			[(? treap?) (walk (rlookup m sigma (rlookup m ? #f)) k)]
 			[_ (matcher-empty)]))])))
 
     (define (general-balanced add-wildseq add-wild add-edge m k)
       (let walk ((m m) (k k))
 	(match m
 	  [(wildcard-sequence mk) (add-wildseq (k mk))]
-	  [(? hash?)
-	   (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))] [((key mk) (in-hash m))]
-	     (if (eq? key ?)
-		 acc
-		 (add-edge acc key (cond
-				    [(key-open? key) (walk mk (lambda (mk) (walk mk k)))]
-				    [(key-close? key) (k mk)]
-				    [else (walk mk k)]))))]
+	  [(? treap?)
+	   (for/fold [(acc (add-wild (walk (rlookup m ? #f) k)))]
+	       [(key-mk (treap-to-alist m)) #:when (not (eq? (car key-mk) ?))]
+	     (match-define (cons key mk) key-mk)
+	     (add-edge acc key (cond
+				[(key-open? key) (walk mk (lambda (mk) (walk mk k)))]
+				[(key-close? key) (k mk)]
+				[else (walk mk k)])))]
 	  [_ (matcher-empty)])))
 
     drop-match))
@@ -693,9 +717,10 @@
     (define (walk m k)
       (match m
 	[(wildcard-sequence _) #f]
-	[(? hash?)
-	 (and (not (hash-has-key? m ?))
-	      (for/fold [(acc (set))] [((key mk) (in-hash m))]
+	[(? treap?)
+	 (and (not (treap-has-key? m ?))
+	      (for/fold [(acc (set))] [(key-mk (treap-to-alist m))]
+		(match-define (cons key mk) key-mk)
 		(maybe-union
 		 acc
 		 (cond
@@ -716,9 +741,10 @@
     (define (walk-seq m k)
       (match m
 	[(wildcard-sequence _) #f]
-	[(? hash?)
-	 (and (not (hash-has-key? m ?))
-	      (for/fold [(acc (set))] [((key mk) (in-hash m))]
+	[(? treap?)
+	 (and (not (treap-has-key? m ?))
+	      (for/fold [(acc (set))] [(key-mk (treap-to-alist m))]
+		(match-define (cons key mk) key-mk)
 		(maybe-union acc (cond
 				  [(key-close? key) (k (set '()) mk)]
 				  [else (walk (rseq key mk)
@@ -770,10 +796,11 @@
        (d "{")
        (d vs)
        (d "}")]
-      [(? hash? h)
-       (if (zero? (hash-count h))
-	   (d " ::: empty hash!")
-	   (for/fold [(need-sep? #f)] [((key k) (in-hash h))]
+      [(? treap? h)
+       (if (zero? (treap-size h))
+	   (d " ::: empty treap!")
+	   (for/fold [(need-sep? #f)] [(key-k (treap-to-alist h))]
+	     (match-define (cons key k) key-k)
 	     (when need-sep?
 	       (newline port)
 	       (d (make-string i #\space)))
@@ -804,16 +831,18 @@
       [#f '()]
       [(success v) (list "" (success->jsexpr v))]
       [(wildcard-sequence m1) (list "...)" (walk m1))]
-      [(? hash?) (for/list [((k v) (in-hash m))]
-		   (list (match k
-			   [(== ?) (list "__")]
-			   [(== SOL) (list "(")]
-			   [(== SOV) (list "#(")]
-			   [(== EOS) (list ")")]
-			   [(? struct-type? t)
-			    (list (string-append (symbol->string (struct-type-name t)) "("))]
-			   [else k])
-			 (walk v)))])))
+      [(? treap?)
+       (for/list [(kv (treap-to-alist m))]
+	 (match-define (cons k v) kv)
+	 (list (match k
+		 [(== ?) (list "__")]
+		 [(== SOL) (list "(")]
+		 [(== SOV) (list "#(")]
+		 [(== EOS) (list ")")]
+		 [(? struct-type? t)
+		  (list (string-append (symbol->string (struct-type-name t)) "("))]
+		 [else k])
+	       (walk v)))])))
 
 ;; String -> String
 ;; Undoes the encoding of struct-type names used in the JSON serialization of Matchers.
@@ -831,25 +860,26 @@
       [(list "" vj) (rsuccess (jsexpr->success vj))]
       [(list "...)" j1) (rwildseq (walk j1))]
       [(list (list kjs vjs) ...)
-       (canonicalize
-	(for/hash [(kj kjs) (vj vjs)]
-	  (values (match kj
-		    [(list "__") ?]
-		    [(list "(") SOL]
-		    [(list "#(") SOV]
-		    [(list ")") EOS]
-		    [(list (? string? s))
-		     (match (deserialize-struct-type-name s)
-		       [#f (error 'jsexpr->matcher
-				  "Illegal open-parenthesis mark ~v"
-				  kj)]
-		       [tn (match (struct-type-name->struct-type tn)
-			     [#f (error 'jsexpr->matcher
-					"Unexpected struct type ~v"
-					tn)]
-			     [t t])])]
-		    [other other])
-		  (walk vj))))])))
+       (for/fold [(acc empty-smap)]
+	   [(kj kjs) (vj vjs)]
+	 (treap-insert acc
+			    (match kj
+			      [(list "__") ?]
+			      [(list "(") SOL]
+			      [(list "#(") SOV]
+			      [(list ")") EOS]
+			      [(list (? string? s))
+			       (match (deserialize-struct-type-name s)
+				 [#f (error 'jsexpr->matcher
+					    "Illegal open-parenthesis mark ~v"
+					    kj)]
+				 [tn (match (struct-type-name->struct-type tn)
+				       [#f (error 'jsexpr->matcher
+						  "Unexpected struct type ~v"
+						  tn)]
+				       [t t])])]
+			      [other other])
+			    (walk vj)))])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -1194,39 +1224,32 @@
 
   (check-requal? (intersect (a 'a) (b 'a)) #f)
 
-  (check-exn #px"Cannot match on hash tables at present"
+  (check-exn #px"Cannot match on treaps at present"
 	     (lambda ()
-	       (intersect (canonicalize (hash 'a 1 'b ?))
-			  (canonicalize (hash 'a ? 'b 2)))))
-  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ? 'b 2)) (rseq 'a 1 'b 2))
-  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ?)) (void))
-  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a 1 'b ?)) (rseq 'a 1 'b ?))
-  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a ? 'c ?)) (void))
+	       (define (h a b c d)
+		 (treap-insert (treap-insert empty-smap a b) c d))
+	       (intersect (h 'a 1 'b ?)
+			  (h 'a ? 'b 2))))
 
-  ;; (check-requal? (intersect (rseq 'a 1 'b ?) (rseq 'a 1 'b (list 2 ?)))
-  ;; 		(rseq 'a 1 'b (list 2 ?)))
-  ;; (check-requal? (intersect (rseq 'a 1 'b (list ? 3)) (rseq 'a 1 'b (list 2 ?)))
-  ;; 		(rseq 'a 1 'b (list 2 3)))
-
-		    (let ((H rseq-multi))
-		      (newline)
-		      (printf "Checking that intersection with wildcard is identity-like\n")
-		      (define m1 (pretty-print-matcher*
-				  (foldr matcher-union (matcher-empty)
-					 (list (pattern->matcher SA (list 'a ?))
-					       (pattern->matcher SB (list 'b ?))
-					       (pattern->matcher SC (list 'b 'c))))))
-		      (define m2 (pretty-print-matcher* (pattern->matcher SD ?)))
-		      (define mi (pretty-print-matcher* (matcher-intersect m1 m2)))
-		      (check-requal? mi
-				     (H SOL (H 'a (H  ? (H EOS (E (set 'A 'D))))
-					       'b (H  ? (H EOS (E (set 'B 'D)))
-						      'c (H EOS (E (set 'B 'C 'D)))))))
-		      (check-requal? (pretty-print-matcher*
-				      (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
-					(matcher-intersect m1 m2)))
-				     m1))
-		    )
+  (let ((H rseq-multi))
+    (newline)
+    (printf "Checking that intersection with wildcard is identity-like\n")
+    (define m1 (pretty-print-matcher*
+		(foldr matcher-union (matcher-empty)
+		       (list (pattern->matcher SA (list 'a ?))
+			     (pattern->matcher SB (list 'b ?))
+			     (pattern->matcher SC (list 'b 'c))))))
+    (define m2 (pretty-print-matcher* (pattern->matcher SD ?)))
+    (define mi (pretty-print-matcher* (matcher-intersect m1 m2)))
+    (check-requal? mi
+		   (H SOL (H 'a (H  ? (H EOS (E (set 'A 'D))))
+			     'b (H  ? (H EOS (E (set 'B 'D)))
+				    'c (H EOS (E (set 'B 'C 'D)))))))
+    (check-requal? (pretty-print-matcher*
+		    (parameterize ((matcher-intersect-successes (lambda (v1 v2) v1)))
+		      (matcher-intersect m1 m2)))
+		   m1))
+  )
 
 (module+ test
   (define (matcher-match-matcher-list m1 m2)
@@ -1425,13 +1448,13 @@
 			(pattern->matcher SD (list ? 3))
 			(pattern->matcher SB (list 3 4)))))
 	(S '((("(")
-	      ((("__") ((2 (((")") (((")") ("" ("A")))))))
-			(3 (((")") (((")") ("" ("D")))))))))
-	       (1      ((2 (((")") (((")") ("" ("A")))))))
+	      ((1      ((2 (((")") (((")") ("" ("A")))))))
 			(3 (((")") (((")") ("" ("D" "C")))))))))
 	       (3      ((2 (((")") (((")") ("" ("A")))))))
 			(3 (((")") (((")") ("" ("D")))))))
-			(4 (((")") (((")") ("" ("B"))))))))))))))
+			(4 (((")") (((")") ("" ("B")))))))))
+	       (("__") ((2 (((")") (((")") ("" ("A")))))))
+			(3 (((")") (((")") ("" ("D"))))))))))))))
     (check-equal? (matcher->jsexpr M (lambda (v) (map symbol->string (set->list v)))) S)
     (check-requal? (jsexpr->matcher S (lambda (v) (list->set (map string->symbol v)))) M)))
 
