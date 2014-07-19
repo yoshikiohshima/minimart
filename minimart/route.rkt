@@ -468,10 +468,6 @@
 	     (walk rest stack1 (rlookup r EOS (get ?)))])]
 	 [(cons (== ?) rest)
 	  (error 'matcher-match-value "Cannot match wildcard as a value")]
-	 [(cons '() rest)
-	  (match (get SOL)
-	    [#f (walk rest stack (get ?))]
-	    [k (walk '() (cons rest stack) k)])]
 	 [(cons (cons v1 v2) rest)
 	  (match (get SOL)
 	    [#f (walk rest stack (get ?))]
