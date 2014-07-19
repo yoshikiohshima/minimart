@@ -27,7 +27,31 @@
 (require "canonicalize.rkt")
 ;; (define canonicalize values)
 
-(struct N (key value priority left right) #:transparent)
+(struct N (key value priority left right) #:transparent
+	#:methods gen:equal+hash
+	[(define (equal-proc a b =?)
+	   (match-define (N ak av ap al ar) a)
+	   (match-define (N bk bv bp bl br) b)
+	   (and (eq? al bl)
+		(eq? ar br)
+		(= ap bp)
+		(=? ak bk)
+		(=? av bv)))
+	 (define (hash-proc a h)
+	   (match-define (N ak av ap al ar) a)
+	   (+ (eq-hash-code al)
+	      (eq-hash-code ar)
+	      (h ap)
+	      (h ak)
+	      (h av)))
+	 (define (hash2-proc a h)
+	   (match-define (N ak av ap al ar) a)
+	   (bitwise-xor (eq-hash-code al)
+			(eq-hash-code ar)
+			(h ap)
+			(h ak)
+			(h av)))])
+
 (struct L () #:transparent)
 
 (struct treap (order root size) #:transparent)
