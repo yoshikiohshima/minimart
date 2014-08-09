@@ -3,10 +3,10 @@
 
 (require minimart/drivers/timer)
 (require minimart/drivers/websocket)
-(require minimart/relay)
+(require minimart/broker/server)
 
 (spawn-timer-driver)
 (spawn-websocket-driver)
 (spawn-world
- (spawn-websocket-relay 8000)
- (spawn-websocket-relay 8443 (websocket-ssl-options "server-cert.pem" "private-key.pem")))
+ (spawn-broker-server 8000)
+ (spawn-broker-server 8443 (websocket-ssl-options "server-cert.pem" "private-key.pem")))
