@@ -75,9 +75,11 @@
   (define hash0 (* c2 (bitwise-ior (arithmetic-shift k r1) (arithmetic-shift k (- 32 r1)))))
   (define hash1
     (+ n (* m (bitwise-ior (arithmetic-shift hash0 r2) (arithmetic-shift hash0 (- 32 r2))))))
-  (define hash2 (* #x85ebca6b (bitwise-xor hash1 (arithmetic-shift hash1 -16))))
-  (define hash3 (* #xc2b2ae35 (bitwise-xor hash2 (arithmetic-shift hash1 -13))))
-  (bitwise-xor hash2 (arithmetic-shift hash1 -16)))
+  (define hash2
+    (bitwise-and #xffffffff (* #x85ebca6b (bitwise-xor hash1 (arithmetic-shift hash1 -16)))))
+  (define hash3
+    (bitwise-and #xffffffff (* #xc2b2ae35 (bitwise-xor hash2 (arithmetic-shift hash2 -13)))))
+  (bitwise-xor hash3 (arithmetic-shift hash3 -16)))
 
 (define (treap-insert t key value [priority (default-priority key)])
   (match-define (treap order root oldsize) t)
