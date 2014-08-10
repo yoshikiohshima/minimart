@@ -90,7 +90,9 @@
 	      never-evt
 	      (handle-evt c-input-port
 			  (lambda (dummy)
-			    (define msg (ws-recv c #:payload-type 'text))
+			    (define msg
+			      (with-handlers ([exn:fail:network? (lambda (e) eof)])
+				(ws-recv c #:payload-type 'text)))
 			    (send-ground-message (websocket-incoming-message id msg))
 			    (loop (or blocked? (eof-object? msg))))))))
   (ws-close! c))
@@ -120,7 +122,7 @@
   (define c (ws-connect (string->url url)))
   (define control-ch (make-channel))
   (define id (gensym 'ws))
-  (thread (lambda ()(connection-thread-loop control-ch c id)))
+  (thread (lambda () (connection-thread-loop control-ch c id)))
   (spawn-connection local-addr remote-addr id c control-ch))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
