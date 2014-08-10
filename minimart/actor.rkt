@@ -37,8 +37,8 @@
 
 (define-syntax (actor stx)
   (syntax-case stx ()
-    [(_ forms ...)
-     (analyze-actor #'(forms ...))]))
+    [(_actor forms ...)
+     (analyze-actor #'_actor #'(forms ...))]))
 
 (define-syntax (observe-gestalt stx) (raise-syntax-error #f "Use of observe-gestalt outside actor form" stx))
 (define-syntax (observe-subscribers stx) (raise-syntax-error #f "Use of observe-subscribers outside actor form" stx))
@@ -137,7 +137,7 @@
 
  (struct participator (condition meta-level) #:transparent)
 
- (define (analyze-actor forms-stx)
+ (define (analyze-actor actor-form-head-stx forms-stx)
    (define actor-name #f)
 
    ;; (Listof Identifier)
@@ -289,7 +289,7 @@
 
      (push! gestalt-updaters
 	    #`(begin
-		(define #,gestalt-init #,gestalt-stx)
+		(define #,gestalt-init (label-gestalt #,gestalt-stx #t))
 		#:update [#,gestalt-name #,gestalt-init]))
 
      (push! gestalt-fragments gestalt-name)
@@ -446,7 +446,7 @@
    (define (build-result)
      (let ((actor-name (or actor-name #'anonymous-actor)))
        (define state-struct-name
-	 (datum->syntax actor-name (string->symbol (format "~a-state" (syntax->datum actor-name)))))
+	 (datum->syntax actor-form-head-stx (string->symbol (format "~a-state" (syntax->datum actor-name)))))
        (define-temporaries
 	 [e-stx #'event]
 	 [state-stx #'state]
