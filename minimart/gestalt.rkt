@@ -240,7 +240,7 @@
 ;; Produces a "full" gestalt including the wildcard matcher at each of
 ;; the n metalevels and m levels.
 (define (gestalt-full n m)
-  (define w (pattern->matcher ?))
+  (define w (pattern->matcher #t ?))
   (gestalt (make-list n (make-list m (cons w w)))))
 
 ;; map-zip: ((U 'right-longer 'left-longer) (Listof X) -> (Listof Y))
