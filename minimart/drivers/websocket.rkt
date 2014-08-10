@@ -139,7 +139,9 @@
 
 (define (websocket-connection e state)
   (with-handlers [((lambda (exn) #t)
-		   (lambda (exn) (shutdown-connection state)))]
+		   (lambda (exn)
+		     (shutdown-connection state)
+		     (raise exn)))]
     (match e
       [(message (websocket-incoming-message _ m) 1 #f)
        (if (eof-object? m)
