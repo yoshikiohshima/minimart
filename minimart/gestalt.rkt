@@ -76,7 +76,13 @@
 ;;      -- Greg Egan, "Diaspora"
 ;;         http://gregegan.customer.netspace.net.au/DIASPORA/01/Orphanogenesis.html
 ;;
-(struct gestalt (metalevels))
+(struct gestalt (metalevels)
+	#:transparent
+	#:methods gen:custom-write
+	[(define (write-proc g port mode)
+	   (display "{{{" port)
+	   (pretty-print-gestalt g port)
+	   (display "}}}" port))])
 
 ;; Convention: A GestaltSet is a Gestalt where the Matchers map to #t
 ;; instead of (NonemptySetof PID) or any other value.
