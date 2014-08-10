@@ -10,9 +10,12 @@
 (require net/tcp-sig)
 (require net/tcp-unit)
 (require net/ssl-tcp-unit)
+(require net/url)
 
 (provide (struct-out websocket-remote-client)
 	 (struct-out websocket-local-server)
+	 (struct-out websocket-local-client)
+	 (struct-out websocket-remote-server)
 	 (struct-out websocket-ssl-options)
 	 (struct-out websocket-message)
 	 spawn-websocket-driver)
@@ -22,6 +25,8 @@
 
 (struct websocket-remote-client (id) #:prefab)
 (struct websocket-local-server (port ssl-options) #:prefab)
+(struct websocket-local-client (id) #:prefab)
+(struct websocket-remote-server (url) #:prefab)
 (struct websocket-ssl-options (cert-file key-file) #:prefab)
 (struct websocket-message (from to body) #:prefab)
 
@@ -35,11 +40,16 @@
 ;; Driver
 
 (define (spawn-websocket-driver)
-  (spawn-demand-matcher (websocket-message ? (?! (websocket-local-server ? ?)) ?)
-			#:demand-is-subscription? #t
-			#:demand-level 1
-			#:supply-level 2
-			spawn-websocket-listener))
+  (list
+   (spawn-demand-matcher (websocket-message ? (?! (websocket-local-server ? ?)) ?)
+			 #:demand-is-subscription? #t
+			 #:demand-level 1
+			 #:supply-level 2
+			 spawn-websocket-listener)
+   (spawn-demand-matcher (websocket-message (?! (websocket-local-client ?))
+					    (?! (websocket-remote-server ?))
+					    ?)
+			 spawn-websocket-connection)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Listener
@@ -56,14 +66,21 @@
 	 #f)]
     [(message (websocket-accepted id _ c control-ch) 1 #f)
      (transition state
-		 (spawn-connection (listener-state-server-addr state) id c control-ch))]
+		 (spawn-connection (listener-state-server-addr state)
+				   (websocket-remote-client id)
+				   id
+				   c
+				   control-ch))]
     [_ #f]))
 
 (define ((connection-handler server-addr) c dummy-state)
   (define control-ch (make-channel))
-  (define c-input-port (ws-conn-base-ip c))
   (define id (gensym 'ws))
   (send-ground-message (websocket-accepted id server-addr c control-ch))
+  (connection-thread-loop control-ch c id))
+
+(define (connection-thread-loop control-ch c id)
+  (define c-input-port (ws-conn-base-ip c))
   (let loop ((blocked? #t))
     (sync (handle-evt control-ch
 		      (match-lambda
@@ -98,10 +115,18 @@
 	 (gestalt-union (pub (websocket-message ? server-addr ?) #:level 2)
 			(sub (websocket-accepted ? server-addr ? ?) #:meta-level 1))))
 
+(define (spawn-websocket-connection local-addr remote-addr)
+  (match-define (websocket-remote-server url) remote-addr)
+  (define c (ws-connect (string->url url)))
+  (define control-ch (make-channel))
+  (define id (gensym 'ws))
+  (thread (lambda ()(connection-thread-loop control-ch c id)))
+  (spawn-connection local-addr remote-addr id c control-ch))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Connection
 
-(struct connection-state (seen-peer? local-addr server-addr c control-ch) #:transparent)
+(struct connection-state (seen-peer? local-addr remote-addr c control-ch) #:transparent)
 
 (define (shutdown-connection state)
   (transition (match (connection-state-control-ch state)
@@ -117,8 +142,8 @@
       [(message (websocket-incoming-message _ m) 1 #f)
        (if (eof-object? m)
 	   (shutdown-connection state)
-	   (transition state (send (websocket-message (connection-state-local-addr state)
-						      (connection-state-server-addr state)
+	   (transition state (send (websocket-message (connection-state-remote-addr state)
+						      (connection-state-local-addr state)
 						      m))))]
       [(message (websocket-message _ _ m) 0 #f)
        (ws-send! (connection-state-c state) m)
@@ -134,11 +159,10 @@
 	 #f])]
       [#f #f])))
 
-(define (spawn-connection server-addr id c control-ch)
-  (define local-addr (websocket-remote-client id))
+(define (spawn-connection local-addr remote-addr id c control-ch)
   (spawn websocket-connection
-	 (connection-state #f local-addr server-addr c control-ch)
-	 (gestalt-union (pub (websocket-message local-addr server-addr ?))
-			(sub (websocket-message server-addr local-addr ?))
-			(sub (websocket-message server-addr local-addr ?) #:level 1)
+	 (connection-state #f local-addr remote-addr c control-ch)
+	 (gestalt-union (pub (websocket-message remote-addr local-addr ?))
+			(sub (websocket-message local-addr remote-addr ?))
+			(sub (websocket-message local-addr remote-addr ?) #:level 1)
 			(sub (websocket-incoming-message id ?) #:meta-level 1))))
