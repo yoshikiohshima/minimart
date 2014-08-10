@@ -21,7 +21,7 @@
 			(lambda (c) (spawn-connection-handler c server-id))))
 
 (define (spawn-connection-handler c server-id)
-  (actor #:name relay
+  (actor #:name broker-server
 	 #:state [tunnelled-gestalt (gestalt-empty)]
 
 	 (send #:meta-level 1 (set-timer c (ping-interval) 'relative))
