@@ -15,6 +15,7 @@
 	 wildcard?
 	 ?!
 	 (struct-out capture)
+	 (struct-out embedded-matcher)
 
 	 matcher? ;; expensive; see implementation
 	 matcher-empty

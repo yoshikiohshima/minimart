@@ -3,6 +3,7 @@
 
 (require racket/set)
 (require racket/match)
+(require (only-in racket/list make-list))
 (require (only-in racket/port with-output-to-string))
 
 (require "route.rkt")
@@ -26,14 +27,17 @@
 	 simple-gestalt
 	 gestalt-empty
 	 gestalt-empty?
+	 gestalt-full
 	 gestalt-union*
 	 gestalt-union
 	 gestalt-filter
 	 gestalt-match
 	 gestalt-subtract
 	 gestalt-transform
+	 gestalt-matcher-transform
 	 strip-gestalt-label
 	 label-gestalt
+	 gestalt-level-count
 	 pretty-print-gestalt
 	 gestalt->pretty-string
 	 gestalt->jsexpr
@@ -226,6 +230,13 @@
   (for*/and [(ml (in-list (gestalt-metalevels g))) (l (in-list ml))]
     (and (matcher-empty? (car l)) (matcher-empty? (cdr l)))))
 
+;; Nat Nat -> GestaltSet
+;; Produces a "full" gestalt including the wildcard matcher at each of
+;; the n metalevels and m levels.
+(define (gestalt-full n m)
+  (define w (pattern->matcher ?))
+  (gestalt (make-list n (make-list m (cons w w)))))
+
 ;; map-zip: ((U 'right-longer 'left-longer) (Listof X) -> (Listof Y))
 ;;          (X X -> Y)
 ;;          (Y (Listof Y) -> (Listof Y))
@@ -399,6 +410,11 @@
 (define (label-gestalt g pid)
   (define pidset (set pid))
   (gestalt-matcher-transform g (lambda (m) (matcher-relabel m (lambda (v) pidset)))))
+
+;; Gestalt Nat -> Nat
+;; Returns the number of "interesting" levels in g at metalevel n.
+(define (gestalt-level-count g n)
+  (length (gestalt-metalevel-ref g n)))
 
 ;; Gestalt [OutputPort] -> Void
 ;; Pretty-prints g on port.
