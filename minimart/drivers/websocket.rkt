@@ -126,10 +126,17 @@
       (websocket-connection id local-addr remote-addr c control-ch))
      (when (not (exn? c))
        (connection-thread-loop control-ch c id))))
-  (actor (subscribe (websocket-connection id local-addr remote-addr ($ c) control-ch)
+  (actor #:state [buffered-messages-rev '()]
+
+	 (subscribe (websocket-connection id local-addr remote-addr ($ c) control-ch)
 	   #:meta-level 1
-	   (list (when (not (exn? c)) (spawn-connection local-addr remote-addr id c control-ch))
-		 (quit)))))
+	   (list (when (not (exn? c))
+		   (for [(m (reverse buffered-messages-rev))] (ws-send! c m))
+		   (spawn-connection local-addr remote-addr id c control-ch))
+		 (quit)))
+
+	 (subscribe (websocket-message local-addr remote-addr ($ m))
+	   #:update [buffered-messages-rev (cons m buffered-messages-rev)])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Connection
