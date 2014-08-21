@@ -350,7 +350,6 @@
 (define (matcher-union re1 re2)
   (matcher-recurse re1
 		   re2
-		   matcher-union
 		   (matcher-union-successes)
 		   values
 		   values
@@ -365,7 +364,6 @@
 (define (matcher-intersect re1 re2)
   (matcher-recurse re1
 		   re2
-		   matcher-intersect
 		   (matcher-intersect-successes)
 		   (lambda (r) #f)
 		   (lambda (r) #f)
@@ -378,23 +376,23 @@
 (define (matcher-subtract re1 re2)
   (matcher-recurse re1
 		   re2
-		   matcher-subtract
 		   (matcher-subtract-successes)
 		   (lambda (r) #f)
 		   values
 		   (lambda (h) #f)
 		   values))
 
-(define (matcher-recurse re1 re2 f vf left-false right-false right-base left-base)
-  (match* (re1 re2)
-    [(#f r) (left-false r)]
-    [(r #f) (right-false r)]
-    [((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (f r1 r2))]
-    [((wildcard-sequence r1) r2) (f (expand-wildseq r1) r2)]
-    [(r1 (wildcard-sequence r2)) (f r1 (expand-wildseq r2))]
-    [((success v1) (success v2)) (rsuccess (vf v1 v2))]
-    [((? treap? h1) (? treap? h2))
-     (fold-over-keys h1 h2 f (left-base h1) (right-base h2))]))
+(define (matcher-recurse re1 re2 vf left-false right-false right-base left-base)
+  (let f ((re1 re1) (re2 re2))
+    (match* (re1 re2)
+      [(#f r) (left-false r)]
+      [(r #f) (right-false r)]
+      [((wildcard-sequence r1) (wildcard-sequence r2)) (rwildseq (f r1 r2))]
+      [((wildcard-sequence r1) r2) (f (expand-wildseq r1) r2)]
+      [(r1 (wildcard-sequence r2)) (f r1 (expand-wildseq r2))]
+      [((success v1) (success v2)) (rsuccess (vf v1 v2))]
+      [((? treap? h1) (? treap? h2))
+       (fold-over-keys h1 h2 f (left-base h1) (right-base h2))])))
 
 (define (fold-over-keys h1 h2 f left-base right-base)
   (define w1 (rlookup h1 ? #f))
