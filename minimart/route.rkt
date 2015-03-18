@@ -195,15 +195,27 @@
 (define (rsuccess v)
   (and v (canonicalize (success v))))
 
-;; Order for sigmas
-(define (sigma-order a b)
-  (define sta? (struct-type? a))
-  (define stb? (struct-type? b))
-  (cond
-   [(and sta? stb?) (datum-order (struct-type-name a) (struct-type-name b))]
-   [sta? '<]
-   [stb? '>]
-   [else (datum-order a b)]))
+;; Order for sigmas. This is complicated by the fact that datum-order
+;; can't see through opaque structs (SIGH).
+(define sigma-order
+  (let ((cache (make-weak-hasheq))
+        (counter 0))
+    (struct cache-index (n) #:transparent)
+    (define (cache-index-for x)
+      (hash-ref cache x (lambda ()
+                          (define index (cache-index counter))
+                          (set! counter (+ counter 1))
+                          (hash-set! cache x index)
+                          index)))
+    (lambda (a b)
+      (define sta? (struct-type? a))
+      (define stb? (struct-type? b))
+      (cond
+        [(and sta? stb?) (datum-order (struct-type-name a) (struct-type-name b))]
+        [sta? '<]
+        [stb? '>]
+        [else (datum-order (if (evt? a) (cache-index-for a) a)
+                           (if (evt? b) (cache-index-for b) b))]))))
 
 ;; (Treap (U Sigma Wildcard) Matcher)
 ;; The empty branch-matcher
